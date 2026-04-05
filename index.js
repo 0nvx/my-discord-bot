@@ -34,7 +34,7 @@ discord.on("messageCreate", async (message) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-r1:free",
+        model: "openrouter/auto",
         messages: [
           {
             role: "user",
