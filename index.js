@@ -55,7 +55,12 @@ discord.on("messageCreate", async (message) => {
       }),
     });
 
-    const data = await res.json();
+const data = await res.json();
+    console.log("OpenRouter response:", JSON.stringify(data));
+    if (!data.choices || !data.choices[0]) {
+      await message.reply("No response from AI. Try again!");
+      return;
+    }
     const reply = data.choices[0].message.content;
 
     conversations[userId].push({ role: "assistant", content: reply });
