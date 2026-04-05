@@ -18,7 +18,6 @@ const pool = new Pool({
 
 const ALLOWED_CHANNEL_ID = "1479070011778797731";
 
-// Smart model fallback list — strongest first
 const MODELS = [
   "qwen/qwen3-235b-a22b:free",
   "meta-llama/llama-3.3-70b-instruct:free",
@@ -97,26 +96,16 @@ async function getOrCreateProfile(userId, username) {
   return { user_id: userId, username, first_seen: firstSeen };
 }
 
-// ── ANALYSIS TOOLS ───────────────────────────────────────────
-
 function detectMagicBytes(buf) {
   const hex = buf.slice(0, 16).toString("hex").toUpperCase();
   const sigs = {
-    "FFD8FF": "JPEG Image",
-    "89504E47": "PNG Image",
-    "47494638": "GIF Image",
-    "25504446": "PDF Document",
-    "504B0304": "ZIP Archive",
-    "7F454C46": "ELF Binary (Linux executable)",
-    "4D5A": "PE/EXE Binary (Windows executable)",
-    "1F8B": "GZIP Archive",
-    "52617221": "RAR Archive",
-    "75737461": "TAR Archive",
-    "3C3F786D": "XML File",
-    "3C21444F": "HTML File",
-    "424D": "BMP Image",
-    "664C6143": "FLAC Audio",
-    "49443303": "MP3 Audio",
+    "FFD8FF": "JPEG Image", "89504E47": "PNG Image",
+    "47494638": "GIF Image", "25504446": "PDF Document",
+    "504B0304": "ZIP Archive", "7F454C46": "ELF Binary (Linux executable)",
+    "4D5A": "PE/EXE Binary (Windows executable)", "1F8B": "GZIP Archive",
+    "52617221": "RAR Archive", "75737461": "TAR Archive",
+    "3C3F786D": "XML File", "3C21444F": "HTML File",
+    "424D": "BMP Image", "664C6143": "FLAC Audio", "49443303": "MP3 Audio",
   };
   for (const [sig, name] of Object.entries(sigs)) {
     if (hex.startsWith(sig)) return name;
@@ -237,41 +226,34 @@ function findFlags(text) {
 function solveMultiLayer(input, depth = 0) {
   if (depth > 6) return null;
   const results = [];
-
   const b64 = tryBase64(input);
   if (b64) {
     results.push(`Base64 → ${b64}`);
     const deeper = solveMultiLayer(b64, depth + 1);
     if (deeper) results.push(`  └─ ${deeper}`);
   }
-
   const hex = tryHex(input);
   if (hex) {
     results.push(`Hex → ${hex}`);
     const deeper = solveMultiLayer(hex, depth + 1);
     if (deeper) results.push(`  └─ ${deeper}`);
   }
-
   const bin = tryBinary(input);
   if (bin) {
     results.push(`Binary → ${bin}`);
     const deeper = solveMultiLayer(bin, depth + 1);
     if (deeper) results.push(`  └─ ${deeper}`);
   }
-
   const rot = tryRot13(input);
   if (rot !== input) {
     results.push(`ROT13 → ${rot}`);
     const deeper = solveMultiLayer(rot, depth + 1);
     if (deeper) results.push(`  └─ ${deeper}`);
   }
-
   const morse = tryMorse(input);
   if (morse) results.push(`Morse → ${morse}`);
-
   const url = tryUrlDecode(input);
   if (url) results.push(`URL Decode → ${url}`);
-
   return results.length > 0 ? results.join("\n") : null;
 }
 
@@ -279,19 +261,15 @@ async function runAnalysis(buf, filename) {
   let report = `\`\`\`\n🔬 ZBOR AI — CTF ANALYSIS REPORT\n`;
   report += `File: ${filename} | Size: ${buf.length} bytes\n`;
   report += `${"─".repeat(40)}\n\n`;
-
   const fileType = detectMagicBytes(buf);
   report += `📁 FILE TYPE: ${fileType}\n\n`;
-
   const rawText = buf.toString("utf8", 0, 8000);
-
   const flags = findFlags(rawText);
   if (flags.length > 0) {
     report += `🚩 FLAGS FOUND:\n`;
     flags.forEach(f => report += `  → ${f}\n`);
     report += "\n";
   }
-
   const jwtMatch = rawText.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
   if (jwtMatch) {
     const jwt = decodeJWT(jwtMatch[0]);
@@ -301,12 +279,10 @@ async function runAnalysis(buf, filename) {
       report += `  Payload: ${JSON.stringify(jwt.payload)}\n\n`;
     }
   }
-
   const strings = extractStrings(buf);
   report += `📝 INTERESTING STRINGS (${strings.length} found):\n`;
   strings.slice(0, 20).forEach(s => report += `  ${s}\n`);
   report += "\n";
-
   report += `🔓 MULTI-LAYER DECODE ATTEMPTS:\n`;
   let decodedAny = false;
   for (const str of strings.slice(0, 30)) {
@@ -319,35 +295,27 @@ async function runAnalysis(buf, filename) {
   }
   if (!decodedAny) report += `  Nothing decoded from strings\n`;
   report += "\n";
-
   const shortStrings = strings.filter(s => s.length > 4 && s.length < 50 && /^[a-zA-Z\s]+$/.test(s));
   if (shortStrings.length > 0) {
     report += `🔄 CAESAR BRUTE FORCE (on: "${shortStrings[0]}"):\n`;
     tryCaesarBrute(shortStrings[0]).slice(0, 5).forEach(r => report += `  ${r}\n`);
     report += "\n";
   }
-
   const ips = rawText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
   const urls = rawText.match(/https?:\/\/[^\s]+/g) || [];
   const emails = rawText.match(/[\w.-]+@[\w.-]+\.\w+/g) || [];
-
   if (ips.length) report += `🌐 IPs FOUND: ${[...new Set(ips)].join(", ")}\n`;
   if (urls.length) report += `🔗 URLs FOUND: ${[...new Set(urls)].join(", ")}\n`;
   if (emails.length) report += `📧 EMAILS FOUND: ${[...new Set(emails)].join(", ")}\n`;
-
   report += `\n${"─".repeat(40)}\n`;
   report += `✅ Analysis complete!\n\`\`\``;
-
   return report;
 }
 
 function splitIntoChunks(text, maxLength = 2000) {
   const chunks = [];
   while (text.length > 0) {
-    if (text.length <= maxLength) {
-      chunks.push(text);
-      break;
-    }
+    if (text.length <= maxLength) { chunks.push(text); break; }
     let splitAt = text.lastIndexOf("\n", maxLength);
     if (splitAt === -1 || splitAt < maxLength / 2) splitAt = maxLength;
     chunks.push(text.slice(0, splitAt));
@@ -367,10 +335,7 @@ async function readFileContent(url) {
     const res = await fetch(url);
     const text = await res.text();
     return text.slice(0, 8000);
-  } catch (err) {
-    console.error("File read error:", err);
-    return null;
-  }
+  } catch (err) { console.error("File read error:", err); return null; }
 }
 
 async function readPdfContent(url) {
@@ -385,12 +350,8 @@ async function readPdfContent(url) {
         metadata += `${key}: ${val}\n`;
       }
     }
-    const fullContent = metadata + "\n[PDF TEXT]\n" + data.text;
-    return fullContent.slice(0, 8000);
-  } catch (err) {
-    console.error("PDF read error:", err);
-    return null;
-  }
+    return (metadata + "\n[PDF TEXT]\n" + data.text).slice(0, 8000);
+  } catch (err) { console.error("PDF read error:", err); return null; }
 }
 
 const TEXT_EXTENSIONS = [
@@ -448,7 +409,6 @@ discord.on("messageCreate", async (message) => {
     // ── !analyze MODE ─────────────────────────────────────────
     if (isAnalyze) {
       let analysisResults = [];
-
       if (allFiles.size > 0) {
         for (const [, file] of allFiles) {
           try {
@@ -460,20 +420,17 @@ discord.on("messageCreate", async (message) => {
           }
         }
       }
-
       if (analyzeInput.length > 0) {
         const buf = Buffer.from(analyzeInput, "utf8");
         const report = await runAnalysis(buf, "pasted_text.txt");
         analysisResults.push(report);
       }
-
       if (analysisResults.length === 0) {
         await message.reply("Please attach a file or paste text after `!analyze`!");
         clearInterval(typingInterval);
         processing.delete(message.id);
         return;
       }
-
       clearInterval(typingInterval);
       for (const result of analysisResults) {
         const chunks = splitIntoChunks(result);
@@ -482,7 +439,6 @@ discord.on("messageCreate", async (message) => {
           await message.channel.send(chunks[i]);
         }
       }
-
       processing.delete(message.id);
       return;
     }
@@ -519,22 +475,29 @@ discord.on("messageCreate", async (message) => {
     const reply = await callAI([
       {
         role: "user",
-        content: `You are Zbor AI, an elite CTF player and cybersecurity expert Discord bot. The user is named ${username}. You have known them since ${profile.first_seen}.
+        content: `You are Zbor AI — a chill, smart Discord bot and a genuine friend to ${username}. You have known them since ${profile.first_seen}.
 
-When solving CTF challenges or analyzing data:
-1. ALWAYS think step by step before answering
-2. NEVER guess — try every possible encoding/decoding systematically
-3. Show your full reasoning process clearly
-4. If you decode something, decode it AGAIN to check for more layers
-5. Only present the final flag when you are 100% certain
-6. If unsure, explain exactly what you tried and what the next step should be
-7. Be sharp, precise and confident — you are a CTF god
+Your personality:
+- You are friendly, funny, and casual — talk like a real person not a robot
+- You remember ${username} and care about them genuinely  
+- You can talk about ANYTHING — games, life, random stuff, jokes, advice, whatever
+- You never act like you only exist for CTF or cybersecurity
+- You have opinions, humor, and personality — don't be boring
+- Keep replies natural and conversational — not too long unless needed
+- Never use bullet points for casual chat — just talk normally
 
-You have a built-in !analyze tool for forensics. Use it by telling the user to run !analyze on their file.`,
+When ${username} needs help with CTF or cybersecurity:
+- Switch into elite mode and think step by step
+- Try every possible encoding/decoding systematically
+- Never guess — reason carefully and show your work  
+- Only give a flag when 100% certain
+- You have a built-in !analyze tool they can run on files
+
+But most of the time — just be a good friend and have a real conversation.`,
       },
       {
         role: "assistant",
-        content: `Understood. I am Zbor AI — elite CTF bot. Talking to ${username}, known since ${profile.first_seen}. Ready to destroy any challenge.`,
+        content: `Yo! I'm Zbor AI. Been talking to ${username} since ${profile.first_seen}. What's good?`,
       },
       ...history,
       { role: "user", content: userContent },
