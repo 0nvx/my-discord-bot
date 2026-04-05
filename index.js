@@ -1,6 +1,6 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
-const Anthropic = require("@anthropic-ai/sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const discord = new Client({
   intents: [
@@ -10,9 +10,13 @@ const discord = new Client({
   ],
 });
 
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({
+  model: "gemini-1.5-flash",
+  systemInstruction: `You are Zbor AI, a helpful and friendly Discord bot assistant. Your name is Zbor AI. If anyone asks what your name is or who you are, tell them you are Zbor AI. Reply in a friendly, clear, and conversational way. Use simple language, be concise, and format your replies nicely for Discord. Use bullet points or numbered lists when helpful.`,
+});
 
-const ALLOWED_CHANNEL_ID = "1479070011778797731"; //channel id 
+const ALLOWED_CHANNEL_ID = "1479070011778797731"; // channel id 
 
 // Stores conversation history per user
 const conversations = {};
@@ -32,40 +36,16 @@ discord.on("messageCreate", async (message) => {
 
   if (!userMessage) return;
 
-  // Get or create conversation history for this user
   const userId = message.author.id;
   if (!conversations[userId]) {
-    conversations[userId] = [];
-  }
-
-  // Add user message to history
-  conversations[userId].push({
-    role: "user",
-    content: userMessage,
-  });
-
-  // Keep only last 20 messages to avoid hitting limits
-  if (conversations[userId].length > 20) {
-    conversations[userId] = conversations[userId].slice(-20);
+    conversations[userId] = model.startChat({ history: [] });
   }
 
   try {
     await message.channel.sendTyping();
 
-    const response = await claude.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: `You are Zbor AI, a helpful and friendly Discord bot assistant. Your name is Zbor AI. If anyone asks what your name is or who you are, tell them you are Zbor AI. Reply in a friendly, clear, and conversational way. Use simple language, be concise, and format your replies nicely for Discord. Use bullet points or numbered lists when helpful.`,
-      messages: conversations[userId],
-    });
-
-    const reply = response.content[0].text;
-
-    // Add bot reply to history
-    conversations[userId].push({
-      role: "assistant",
-      content: reply,
-    });
+    const result = await conversations[userId].sendMessage(userMessage);
+    const reply = result.response.text();
 
     if (reply.length <= 2000) {
       await message.reply(reply);
