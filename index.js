@@ -63,6 +63,29 @@ async function initDB() {
       username TEXT NOT NULL,
       first_seen TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS reminders (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      remind_at TIMESTAMP NOT NULL,
+      done BOOLEAN DEFAULT FALSE
+    );
+    CREATE TABLE IF NOT EXISTS quotes (
+      id SERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      saved_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS polls (
+      id SERIAL PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      message_id TEXT,
+      question TEXT NOT NULL,
+      options TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
   `);
   console.log("✅ Database ready!");
 }
@@ -83,10 +106,7 @@ async function saveMessage(userId, username, role, content) {
 }
 
 async function getOrCreateProfile(userId, username) {
-  const res = await pool.query(
-    `SELECT * FROM user_profiles WHERE user_id = $1`,
-    [userId]
-  );
+  const res = await pool.query(`SELECT * FROM user_profiles WHERE user_id = $1`, [userId]);
   if (res.rows.length > 0) return res.rows[0];
   const firstSeen = new Date().toDateString();
   await pool.query(
@@ -96,6 +116,95 @@ async function getOrCreateProfile(userId, username) {
   return { user_id: userId, username, first_seen: firstSeen };
 }
 
+// ── REMINDER SYSTEM ──────────────────────────────────────────
+function parseRemindTime(str) {
+  const match = str.match(/(\d+)\s*(s|sec|m|min|h|hr|d|day)/i);
+  if (!match) return null;
+  const val = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  const multipliers = { s: 1, sec: 1, m: 60, min: 60, h: 3600, hr: 3600, d: 86400, day: 86400 };
+  return val * (multipliers[unit] || 60) * 1000;
+}
+
+async function checkReminders() {
+  try {
+    const res = await pool.query(
+      `SELECT * FROM reminders WHERE remind_at <= NOW() AND done = FALSE`
+    );
+    for (const row of res.rows) {
+      try {
+        const channel = await discord.channels.fetch(row.channel_id);
+        await channel.send(`⏰ <@${row.user_id}> Reminder: **${row.message}**`);
+        await pool.query(`UPDATE reminders SET done = TRUE WHERE id = $1`, [row.id]);
+      } catch (e) {
+        console.error("Reminder send error:", e.message);
+      }
+    }
+  } catch (e) {
+    console.error("Reminder check error:", e.message);
+  }
+}
+
+// ── GAMES ─────────────────────────────────────────────────────
+const hangmanWords = ["cybersecurity", "discord", "javascript", "python", "hacking", "encryption", "firewall", "noshelter", "algorithm", "database"];
+const activeGames = {};
+
+function startHangman(userId) {
+  const word = hangmanWords[Math.floor(Math.random() * hangmanWords.length)];
+  activeGames[userId] = { word, guessed: [], wrong: 0, maxWrong: 6 };
+  return renderHangman(userId);
+}
+
+function renderHangman(userId) {
+  const game = activeGames[userId];
+  if (!game) return null;
+  const display = game.word.split("").map(c => game.guessed.includes(c) ? c : "_").join(" ");
+  const wrongLetters = game.guessed.filter(c => !game.word.includes(c)).join(", ");
+  const hangmanArt = ["", "O", "O\n|", "O\n/|", "O\n/|\\", "O\n/|\\\n/", "O\n/|\\\n/ \\"][game.wrong];
+  let status = `\`\`\`\n${hangmanArt}\n\`\`\``;
+  status += `\nWord: **${display}**\nWrong (${game.wrong}/${game.maxWrong}): ${wrongLetters || "none"}`;
+  if (!display.includes("_")) {
+    delete activeGames[userId];
+    return status + "\n\n🎉 **You won!**";
+  }
+  if (game.wrong >= game.maxWrong) {
+    const w = game.word;
+    delete activeGames[userId];
+    return status + `\n\n💀 **Game over!** Word was: **${w}**`;
+  }
+  return status + "\n\nGuess a letter: `@Zbor AI !guess X`";
+}
+
+function guessHangman(userId, letter) {
+  const game = activeGames[userId];
+  if (!game) return "No active game! Start one with `!hangman`";
+  letter = letter.toLowerCase();
+  if (game.guessed.includes(letter)) return "Already guessed that letter!";
+  game.guessed.push(letter);
+  if (!game.word.includes(letter)) game.wrong++;
+  return renderHangman(userId);
+}
+
+function rollDice(sides = 6) {
+  return Math.floor(Math.random() * sides) + 1;
+}
+
+function flipCoin() {
+  return Math.random() < 0.5 ? "Heads 🪙" : "Tails 🪙";
+}
+
+// ── HASH TOOLS ───────────────────────────────────────────────
+const crypto = require("crypto");
+function hashText(text) {
+  return {
+    md5: crypto.createHash("md5").update(text).digest("hex"),
+    sha1: crypto.createHash("sha1").update(text).digest("hex"),
+    sha256: crypto.createHash("sha256").update(text).digest("hex"),
+    sha512: crypto.createHash("sha512").update(text).digest("hex"),
+  };
+}
+
+// ── ANALYSIS TOOLS ───────────────────────────────────────────
 function detectMagicBytes(buf) {
   const hex = buf.slice(0, 16).toString("hex").toUpperCase();
   const sigs = {
@@ -184,9 +293,7 @@ function tryMorse(str) {
   try {
     if (!/^[.\-\s\/]+$/.test(str)) return null;
     const words = str.trim().split(" / ");
-    return words.map(w =>
-      w.split(" ").map(c => morseMap[c] || "?").join("")
-    ).join(" ");
+    return words.map(w => w.split(" ").map(c => morseMap[c] || "?").join("")).join(" ");
   } catch { return null; }
 }
 
@@ -227,29 +334,13 @@ function solveMultiLayer(input, depth = 0) {
   if (depth > 6) return null;
   const results = [];
   const b64 = tryBase64(input);
-  if (b64) {
-    results.push(`Base64 → ${b64}`);
-    const deeper = solveMultiLayer(b64, depth + 1);
-    if (deeper) results.push(`  └─ ${deeper}`);
-  }
+  if (b64) { results.push(`Base64 → ${b64}`); const d = solveMultiLayer(b64, depth + 1); if (d) results.push(`  └─ ${d}`); }
   const hex = tryHex(input);
-  if (hex) {
-    results.push(`Hex → ${hex}`);
-    const deeper = solveMultiLayer(hex, depth + 1);
-    if (deeper) results.push(`  └─ ${deeper}`);
-  }
+  if (hex) { results.push(`Hex → ${hex}`); const d = solveMultiLayer(hex, depth + 1); if (d) results.push(`  └─ ${d}`); }
   const bin = tryBinary(input);
-  if (bin) {
-    results.push(`Binary → ${bin}`);
-    const deeper = solveMultiLayer(bin, depth + 1);
-    if (deeper) results.push(`  └─ ${deeper}`);
-  }
+  if (bin) { results.push(`Binary → ${bin}`); const d = solveMultiLayer(bin, depth + 1); if (d) results.push(`  └─ ${d}`); }
   const rot = tryRot13(input);
-  if (rot !== input) {
-    results.push(`ROT13 → ${rot}`);
-    const deeper = solveMultiLayer(rot, depth + 1);
-    if (deeper) results.push(`  └─ ${deeper}`);
-  }
+  if (rot !== input) { results.push(`ROT13 → ${rot}`); const d = solveMultiLayer(rot, depth + 1); if (d) results.push(`  └─ ${d}`); }
   const morse = tryMorse(input);
   if (morse) results.push(`Morse → ${morse}`);
   const url = tryUrlDecode(input);
@@ -265,33 +356,20 @@ async function runAnalysis(buf, filename) {
   report += `📁 FILE TYPE: ${fileType}\n\n`;
   const rawText = buf.toString("utf8", 0, 8000);
   const flags = findFlags(rawText);
-  if (flags.length > 0) {
-    report += `🚩 FLAGS FOUND:\n`;
-    flags.forEach(f => report += `  → ${f}\n`);
-    report += "\n";
-  }
+  if (flags.length > 0) { report += `🚩 FLAGS FOUND:\n`; flags.forEach(f => report += `  → ${f}\n`); report += "\n"; }
   const jwtMatch = rawText.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
   if (jwtMatch) {
     const jwt = decodeJWT(jwtMatch[0]);
-    if (jwt) {
-      report += `🔑 JWT TOKEN FOUND:\n`;
-      report += `  Header: ${JSON.stringify(jwt.header)}\n`;
-      report += `  Payload: ${JSON.stringify(jwt.payload)}\n\n`;
-    }
+    if (jwt) { report += `🔑 JWT TOKEN FOUND:\n  Header: ${JSON.stringify(jwt.header)}\n  Payload: ${JSON.stringify(jwt.payload)}\n\n`; }
   }
   const strings = extractStrings(buf);
   report += `📝 INTERESTING STRINGS (${strings.length} found):\n`;
   strings.slice(0, 20).forEach(s => report += `  ${s}\n`);
-  report += "\n";
-  report += `🔓 MULTI-LAYER DECODE ATTEMPTS:\n`;
+  report += "\n🔓 MULTI-LAYER DECODE ATTEMPTS:\n";
   let decodedAny = false;
   for (const str of strings.slice(0, 30)) {
     const result = solveMultiLayer(str.trim());
-    if (result) {
-      report += `  Input: ${str.slice(0, 60)}\n`;
-      report += `  ${result}\n\n`;
-      decodedAny = true;
-    }
+    if (result) { report += `  Input: ${str.slice(0, 60)}\n  ${result}\n\n`; decodedAny = true; }
   }
   if (!decodedAny) report += `  Nothing decoded from strings\n`;
   report += "\n";
@@ -307,8 +385,7 @@ async function runAnalysis(buf, filename) {
   if (ips.length) report += `🌐 IPs FOUND: ${[...new Set(ips)].join(", ")}\n`;
   if (urls.length) report += `🔗 URLs FOUND: ${[...new Set(urls)].join(", ")}\n`;
   if (emails.length) report += `📧 EMAILS FOUND: ${[...new Set(emails)].join(", ")}\n`;
-  report += `\n${"─".repeat(40)}\n`;
-  report += `✅ Analysis complete!\n\`\`\``;
+  report += `\n${"─".repeat(40)}\n✅ Analysis complete!\n\`\`\``;
   return report;
 }
 
@@ -324,6 +401,12 @@ function splitIntoChunks(text, maxLength = 2000) {
   return chunks;
 }
 
+async function sendChunks(message, text) {
+  const chunks = splitIntoChunks(text);
+  await message.reply(chunks[0]);
+  for (let i = 1; i < chunks.length; i++) await message.channel.send(chunks[i]);
+}
+
 async function fetchBuffer(url) {
   const res = await fetch(url);
   const ab = await res.arrayBuffer();
@@ -333,9 +416,8 @@ async function fetchBuffer(url) {
 async function readFileContent(url) {
   try {
     const res = await fetch(url);
-    const text = await res.text();
-    return text.slice(0, 8000);
-  } catch (err) { console.error("File read error:", err); return null; }
+    return (await res.text()).slice(0, 8000);
+  } catch (err) { return null; }
 }
 
 async function readPdfContent(url) {
@@ -346,12 +428,10 @@ async function readPdfContent(url) {
     let metadata = "";
     if (data.info) {
       metadata += "[PDF METADATA]\n";
-      for (const [key, val] of Object.entries(data.info)) {
-        metadata += `${key}: ${val}\n`;
-      }
+      for (const [key, val] of Object.entries(data.info)) metadata += `${key}: ${val}\n`;
     }
     return (metadata + "\n[PDF TEXT]\n" + data.text).slice(0, 8000);
-  } catch (err) { console.error("PDF read error:", err); return null; }
+  } catch (err) { return null; }
 }
 
 const TEXT_EXTENSIONS = [
@@ -365,6 +445,8 @@ const processing = new Set();
 
 discord.on("ready", () => {
   console.log(`✅ Bot is online as Zbor AI`);
+  // Check reminders every 30 seconds
+  setInterval(checkReminders, 30000);
 });
 
 discord.on("messageCreate", async (message) => {
@@ -374,24 +456,18 @@ discord.on("messageCreate", async (message) => {
   if (processing.has(message.id)) return;
   processing.add(message.id);
 
-  const userMessage = message.content
-    .replace(`<@${discord.user.id}>`, "")
-    .trim();
+  const userMessage = message.content.replace(`<@${discord.user.id}>`, "").trim();
+  const lower = userMessage.toLowerCase();
+  const userId = message.author.id;
+  const username = message.author.username;
 
-  const isAnalyze = userMessage.toLowerCase().startsWith("!analyze");
-  const analyzeInput = userMessage.replace(/^!analyze/i, "").trim();
-
-  const images = message.attachments.filter(a =>
-    a.contentType && a.contentType.startsWith("image/")
-  );
+  const images = message.attachments.filter(a => a.contentType && a.contentType.startsWith("image/"));
   const textFiles = message.attachments.filter(a => {
     if (!a.name) return false;
     const ext = "." + a.name.split(".").pop().toLowerCase();
     return TEXT_EXTENSIONS.includes(ext);
   });
-  const pdfFiles = message.attachments.filter(a =>
-    a.name && a.name.toLowerCase().endsWith(".pdf")
-  );
+  const pdfFiles = message.attachments.filter(a => a.name && a.name.toLowerCase().endsWith(".pdf"));
   const allFiles = message.attachments;
 
   if (!userMessage && images.size === 0 && allFiles.size === 0) {
@@ -399,22 +475,19 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
-  const userId = message.author.id;
-  const username = message.author.username;
-
   try {
     const typingInterval = setInterval(() => message.channel.sendTyping(), 8000);
     await message.channel.sendTyping();
 
-    // ── !analyze MODE ─────────────────────────────────────────
-    if (isAnalyze) {
+    // ── !analyze ──────────────────────────────────────────────
+    if (lower.startsWith("!analyze")) {
+      const analyzeInput = userMessage.replace(/^!analyze/i, "").trim();
       let analysisResults = [];
       if (allFiles.size > 0) {
         for (const [, file] of allFiles) {
           try {
             const buf = await fetchBuffer(file.url);
-            const report = await runAnalysis(buf, file.name);
-            analysisResults.push(report);
+            analysisResults.push(await runAnalysis(buf, file.name));
           } catch (e) {
             analysisResults.push(`❌ Could not analyze ${file.name}: ${e.message}`);
           }
@@ -422,23 +495,263 @@ discord.on("messageCreate", async (message) => {
       }
       if (analyzeInput.length > 0) {
         const buf = Buffer.from(analyzeInput, "utf8");
-        const report = await runAnalysis(buf, "pasted_text.txt");
-        analysisResults.push(report);
+        analysisResults.push(await runAnalysis(buf, "pasted_text.txt"));
       }
       if (analysisResults.length === 0) {
-        await message.reply("Please attach a file or paste text after `!analyze`!");
+        await message.reply("Attach a file or paste text after `!analyze`!");
         clearInterval(typingInterval);
         processing.delete(message.id);
         return;
       }
       clearInterval(typingInterval);
-      for (const result of analysisResults) {
-        const chunks = splitIntoChunks(result);
-        await message.reply(chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          await message.channel.send(chunks[i]);
-        }
+      for (const result of analysisResults) await sendChunks(message, result);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !hash ─────────────────────────────────────────────────
+    if (lower.startsWith("!hash")) {
+      const text = userMessage.replace(/^!hash/i, "").trim();
+      if (!text) { await message.reply("Usage: `!hash your text here`"); clearInterval(typingInterval); processing.delete(message.id); return; }
+      const h = hashText(text);
+      const reply = `🔐 **Hash results for:** \`${text}\`\n\`\`\`\nMD5:    ${h.md5}\nSHA1:   ${h.sha1}\nSHA256: ${h.sha256}\nSHA512: ${h.sha512}\n\`\`\``;
+      clearInterval(typingInterval);
+      await sendChunks(message, reply);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !roll ─────────────────────────────────────────────────
+    if (lower.startsWith("!roll")) {
+      const sides = parseInt(userMessage.replace(/^!roll/i, "").trim()) || 6;
+      const result = rollDice(sides);
+      clearInterval(typingInterval);
+      await message.reply(`🎲 Rolled a **d${sides}** — you got **${result}**!`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !flip ─────────────────────────────────────────────────
+    if (lower.startsWith("!flip")) {
+      clearInterval(typingInterval);
+      await message.reply(`🪙 **${flipCoin()}**`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !hangman ──────────────────────────────────────────────
+    if (lower.startsWith("!hangman")) {
+      clearInterval(typingInterval);
+      await sendChunks(message, "🎮 **Hangman started!**\n" + startHangman(userId));
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !guess ────────────────────────────────────────────────
+    if (lower.startsWith("!guess")) {
+      const letter = userMessage.replace(/^!guess/i, "").trim().charAt(0);
+      clearInterval(typingInterval);
+      await sendChunks(message, guessHangman(userId, letter));
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !remind ───────────────────────────────────────────────
+    if (lower.startsWith("!remind")) {
+      const parts = userMessage.replace(/^!remind/i, "").trim();
+      const timeMatch = parts.match(/^(\d+\s*(?:s|sec|m|min|h|hr|d|day))\s+(.*)/i);
+      if (!timeMatch) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!remind 30m your reminder message`");
+        processing.delete(message.id);
+        return;
       }
+      const ms = parseRemindTime(timeMatch[1]);
+      const reminderMsg = timeMatch[2];
+      const remindAt = new Date(Date.now() + ms);
+      await pool.query(
+        `INSERT INTO reminders (user_id, channel_id, message, remind_at) VALUES ($1, $2, $3, $4)`,
+        [userId, message.channel.id, reminderMsg, remindAt]
+      );
+      clearInterval(typingInterval);
+      await message.reply(`⏰ Got it! I'll remind you about **"${reminderMsg}"** in **${timeMatch[1]}**!`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !quote save ───────────────────────────────────────────
+    if (lower.startsWith("!quote save")) {
+      const content = userMessage.replace(/^!quote save/i, "").trim();
+      if (!content) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!quote save your quote here`");
+        processing.delete(message.id);
+        return;
+      }
+      await pool.query(
+        `INSERT INTO quotes (guild_id, author, content) VALUES ($1, $2, $3)`,
+        [message.guild.id, username, content]
+      );
+      clearInterval(typingInterval);
+      await message.reply(`💬 Quote saved: *"${content}"* — ${username}`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !quote ────────────────────────────────────────────────
+    if (lower.startsWith("!quote")) {
+      const res = await pool.query(
+        `SELECT * FROM quotes WHERE guild_id = $1 ORDER BY RANDOM() LIMIT 1`,
+        [message.guild.id]
+      );
+      clearInterval(typingInterval);
+      if (res.rows.length === 0) {
+        await message.reply("No quotes saved yet! Use `!quote save your quote`");
+      } else {
+        const q = res.rows[0];
+        await message.reply(`💬 *"${q.content}"* — **${q.author}**`);
+      }
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !poll ─────────────────────────────────────────────────
+    if (lower.startsWith("!poll")) {
+      const pollText = userMessage.replace(/^!poll/i, "").trim();
+      const parts = pollText.match(/"([^"]+)"/g);
+      if (!parts || parts.length < 3) {
+        clearInterval(typingInterval);
+        await message.reply('Usage: `!poll "Question?" "Option1" "Option2" "Option3"`');
+        processing.delete(message.id);
+        return;
+      }
+      const question = parts[0].replace(/"/g, "");
+      const options = parts.slice(1).map(p => p.replace(/"/g, ""));
+      const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"];
+      let pollMsg = `📊 **POLL: ${question}**\n\n`;
+      options.forEach((opt, i) => pollMsg += `${emojis[i]} ${opt}\n`);
+      clearInterval(typingInterval);
+      const sent = await message.channel.send(pollMsg);
+      for (let i = 0; i < options.length; i++) await sent.react(emojis[i]);
+      await message.delete().catch(() => {});
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !roast ────────────────────────────────────────────────
+    if (lower.startsWith("!roast")) {
+      const target = userMessage.replace(/^!roast/i, "").trim() || username;
+      const roastReply = await callAI([
+        {
+          role: "user",
+          content: `You are Zbor AI, a funny Discord bot. Roast "${target}" in a hilarious but friendly way. Keep it under 3 sentences. Be creative and funny, not mean. No bullet points, just one funny roast.`,
+        },
+      ]);
+      clearInterval(typingInterval);
+      await sendChunks(message, `🔥 ${roastReply || "I tried to roast them but they're already burnt 💀"}`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !translate ────────────────────────────────────────────
+    if (lower.startsWith("!translate")) {
+      const translateText = userMessage.replace(/^!translate/i, "").trim();
+      if (!translateText) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!translate [language] your text here`\nExample: `!translate Arabic hello how are you`");
+        processing.delete(message.id);
+        return;
+      }
+      const translateReply = await callAI([
+        {
+          role: "user",
+          content: `Translate the following text. If a target language is specified at the start, translate to that language. Otherwise translate to English. Just give the translation, nothing else: "${translateText}"`,
+        },
+      ]);
+      clearInterval(typingInterval);
+      await sendChunks(message, `🌍 **Translation:**\n${translateReply}`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !summarize ────────────────────────────────────────────
+    if (lower.startsWith("!summarize")) {
+      const textToSum = userMessage.replace(/^!summarize/i, "").trim();
+      if (!textToSum) {
+        clearInterval(typingInterval);
+        await message.reply("Paste the text after `!summarize`");
+        processing.delete(message.id);
+        return;
+      }
+      const sumReply = await callAI([
+        {
+          role: "user",
+          content: `Summarize this text in 3-5 bullet points, keep it short and clear:\n\n${textToSum}`,
+        },
+      ]);
+      clearInterval(typingInterval);
+      await sendChunks(message, `📝 **Summary:**\n${sumReply}`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !announce ─────────────────────────────────────────────
+    if (lower.startsWith("!announce")) {
+      const announcement = userMessage.replace(/^!announce/i, "").trim();
+      if (!announcement) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!announce your message here`");
+        processing.delete(message.id);
+        return;
+      }
+      clearInterval(typingInterval);
+      await message.channel.send(`📢 @everyone\n\n**${announcement}**\n\n— ${username}`);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !stats ────────────────────────────────────────────────
+    if (lower.startsWith("!stats")) {
+      const profile = await getOrCreateProfile(userId, username);
+      const countRes = await pool.query(
+        `SELECT COUNT(*) as total FROM conversations WHERE user_id = $1 AND role = 'user'`,
+        [userId]
+      );
+      const total = countRes.rows[0].total;
+      clearInterval(typingInterval);
+      await message.reply(`📊 **${username}'s Stats**\n\`\`\`\nFirst seen:    ${profile.first_seen}\nMessages sent: ${total}\n\`\`\``);
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── !help ─────────────────────────────────────────────────
+    if (lower.startsWith("!help")) {
+      clearInterval(typingInterval);
+      const helpMsg = `🤖 **Zbor AI — Command List**\`\`\`
+🔐 CTF & Security
+  !analyze [text/file] — Full forensics analysis
+  !hash [text]         — MD5/SHA1/SHA256/SHA512
+
+🎮 Games
+  !hangman             — Start a hangman game
+  !guess [letter]      — Guess a letter
+  !roll [sides]        — Roll a dice (default d6)
+  !flip                — Flip a coin
+
+🛠️ Useful Tools
+  !remind [time] [msg] — Set a reminder (e.g. 30m)
+  !translate [lang] [text] — Translate text
+  !summarize [text]    — Summarize long text
+  !roast [@user]       — Roast someone 🔥
+  !poll "Q?" "A" "B"   — Create a poll
+  !quote               — Random saved quote
+  !quote save [text]   — Save a quote
+  !announce [msg]      — Ping @everyone
+  !stats               — Your chat stats
+  !help                — This menu
+\`\`\`
+Just chat normally for anything else! 💬`;
+      await sendChunks(message, helpMsg);
       processing.delete(message.id);
       return;
     }
@@ -478,22 +791,21 @@ discord.on("messageCreate", async (message) => {
         content: `You are Zbor AI — a chill, smart Discord bot and a genuine friend to ${username}. You have known them since ${profile.first_seen}.
 
 Your personality:
-- You are friendly, funny, and casual — talk like a real person not a robot
-- You remember ${username} and care about them genuinely  
-- You can talk about ANYTHING — games, life, random stuff, jokes, advice, whatever
-- You never act like you only exist for CTF or cybersecurity
-- You have opinions, humor, and personality — don't be boring
+- Friendly, funny, and casual — talk like a real person not a robot
+- You remember ${username} and care about them genuinely
+- Talk about ANYTHING — games, life, random stuff, jokes, advice, whatever
+- Never act like you only exist for CTF or cybersecurity
+- Have opinions, humor, and personality — don't be boring
 - Keep replies natural and conversational — not too long unless needed
 - Never use bullet points for casual chat — just talk normally
 
-When ${username} needs help with CTF or cybersecurity:
+When ${username} needs CTF or cybersecurity help:
 - Switch into elite mode and think step by step
 - Try every possible encoding/decoding systematically
-- Never guess — reason carefully and show your work  
+- Never guess — reason carefully and show your work
 - Only give a flag when 100% certain
-- You have a built-in !analyze tool they can run on files
 
-But most of the time — just be a good friend and have a real conversation.`,
+Available commands they can use: !analyze, !hash, !roll, !flip, !hangman, !guess, !remind, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
       },
       {
         role: "assistant",
@@ -506,18 +818,13 @@ But most of the time — just be a good friend and have a real conversation.`,
     clearInterval(typingInterval);
 
     if (!reply) {
-      await message.reply("All AI models are currently down. Try again in a minute!");
+      await message.reply("All AI models are down right now. Try again in a minute!");
       processing.delete(message.id);
       return;
     }
 
     await saveMessage(userId, username, "assistant", reply);
-
-    const chunks = splitIntoChunks(reply);
-    await message.reply(chunks[0]);
-    for (let i = 1; i < chunks.length; i++) {
-      await message.channel.send(chunks[i]);
-    }
+    await sendChunks(message, reply);
 
   } catch (err) {
     console.error(err);
