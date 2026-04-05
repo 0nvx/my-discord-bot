@@ -27,11 +27,11 @@ const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
 const MODELS = [
-"sophosympatheia/rogue-rose-103b-v0.2:free",
-"qwen/qwen3-235b-a22b:free",
-"meta-llama/llama-3.3-70b-instruct:free",
-"nvidia/llama-3.1-nemotron-70b-instruct:free",
-"openrouter/auto",
+ "mistralai/mistral-7b-instruct:free",
+  "gryphe/mythomax-l2-13b:free",
+  "undi95/toppy-m-7b:free",
+  "qwen/qwen3-235b-a22b:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
 ];
 
 // ── ⚡ FASTER AI: Race all models with 15s timeout ────────────
@@ -47,7 +47,7 @@ async function callAI(messages, maxTokens = 600) {
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, transforms: ["middle-out"], route: "fallback" }),
     })
     .then(r => r.json())
     .then(data => {
