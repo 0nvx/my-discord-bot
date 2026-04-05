@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
 const { Pool } = require("pg");
+const pdfParse = require("pdf-parse");
 
 const discord = new Client({
   intents: [
@@ -64,6 +65,36 @@ async function getOrCreateProfile(userId, username) {
   return { user_id: userId, username, first_seen: firstSeen };
 }
 
+// Fetch and read text from a regular file URL
+async function readFileContent(url) {
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    return text.slice(0, 8000);
+  } catch {
+    return null;
+  }
+}
+
+// Fetch and read text from a PDF URL
+async function readPdfContent(url) {
+  try {
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
+    const data = await pdfParse(Buffer.from(buffer));
+    return data.text.slice(0, 8000);
+  } catch {
+    return null;
+  }
+}
+
+const TEXT_EXTENSIONS = [
+  ".txt", ".md", ".js", ".ts", ".py", ".html", ".css",
+  ".json", ".csv", ".xml", ".yaml", ".yml", ".java",
+  ".c", ".cpp", ".cs", ".php", ".rb", ".go", ".rs",
+  ".sql", ".sh", ".bat", ".env", ".log"
+];
+
 discord.on("ready", () => {
   console.log(`✅ Bot is online as Zbor AI`);
 });
@@ -77,7 +108,21 @@ discord.on("messageCreate", async (message) => {
     .replace(`<@${discord.user.id}>`, "")
     .trim();
 
-  if (!userMessage) return;
+  const images = message.attachments.filter(a =>
+    a.contentType && a.contentType.startsWith("image/")
+  );
+
+  const textFiles = message.attachments.filter(a => {
+    if (!a.name) return false;
+    const ext = "." + a.name.split(".").pop().toLowerCase();
+    return TEXT_EXTENSIONS.includes(ext);
+  });
+
+  const pdfFiles = message.attachments.filter(a =>
+    a.name && a.name.toLowerCase().endsWith(".pdf")
+  );
+
+  if (!userMessage && images.size === 0 && textFiles.size === 0 && pdfFiles.size === 0) return;
 
   const userId = message.author.id;
   const username = message.author.username;
@@ -86,8 +131,44 @@ discord.on("messageCreate", async (message) => {
     await message.channel.sendTyping();
 
     const profile = await getOrCreateProfile(userId, username);
-    await saveMessage(userId, username, "user", userMessage);
+    if (userMessage) await saveMessage(userId, username, "user", userMessage);
     const history = await getHistory(userId);
+
+    // Read text file contents
+    let fileContext = "";
+    for (const [, file] of textFiles) {
+      const content = await readFileContent(file.url);
+      if (content) {
+        fileContext += `\n\n📄 File: ${file.name}\n\`\`\`\n${content}\n\`\`\``;
+      }
+    }
+
+    // Read PDF contents
+    for (const [, file] of pdfFiles) {
+      const content = await readPdfContent(file.url);
+      if (content) {
+        fileContext += `\n\n📄 PDF File: ${file.name}\n\`\`\`\n${content}\n\`\`\``;
+      } else {
+        fileContext += `\n\n📄 Could not read PDF: ${file.name}. Ask the user to copy paste the text instead.`;
+      }
+    }
+
+    // Build message content
+    let userContent;
+    if (images.size > 0) {
+      userContent = [
+        {
+          type: "text",
+          text: (userMessage || "What is in this image?") + fileContext
+        },
+        ...images.map(img => ({
+          type: "image_url",
+          image_url: { url: img.url }
+        }))
+      ];
+    } else {
+      userContent = (userMessage || "Please analyze the attached file.") + fileContext;
+    }
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -107,6 +188,10 @@ discord.on("messageCreate", async (message) => {
             content: `Got it! I am Zbor AI. I'm talking to ${username} and I remember all our previous conversations!`,
           },
           ...history,
+          {
+            role: "user",
+            content: userContent,
+          }
         ],
       }),
     });
