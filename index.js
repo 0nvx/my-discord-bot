@@ -18,6 +18,38 @@ const pool = new Pool({
 
 const ALLOWED_CHANNEL_ID = "1479070011778797731";
 
+// Smart model fallback list — strongest first
+const MODELS = [
+  "qwen/qwen3-235b-a22b:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "nvidia/llama-3.1-nemotron-70b-instruct:free",
+  "openrouter/auto",
+];
+
+async function callAI(messages) {
+  for (const model of MODELS) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, messages }),
+      });
+      const data = await res.json();
+      if (data.choices && data.choices[0]) {
+        console.log(`✅ Success with model: ${model}`);
+        return data.choices[0].message.content;
+      }
+      console.log(`❌ Failed: ${model}`);
+    } catch (err) {
+      console.log(`❌ Error with ${model}:`, err.message);
+    }
+  }
+  return null;
+}
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -65,7 +97,7 @@ async function getOrCreateProfile(userId, username) {
   return { user_id: userId, username, first_seen: firstSeen };
 }
 
-// ── ANALYSIS TOOLS ──────────────────────────────────────────
+// ── ANALYSIS TOOLS ───────────────────────────────────────────
 
 function detectMagicBytes(buf) {
   const hex = buf.slice(0, 16).toString("hex").toUpperCase();
@@ -83,7 +115,6 @@ function detectMagicBytes(buf) {
     "3C3F786D": "XML File",
     "3C21444F": "HTML File",
     "424D": "BMP Image",
-    "OGG": "OGG Audio",
     "664C6143": "FLAC Audio",
     "49443303": "MP3 Audio",
   };
@@ -204,7 +235,7 @@ function findFlags(text) {
 }
 
 function solveMultiLayer(input, depth = 0) {
-  if (depth > 5) return null;
+  if (depth > 6) return null;
   const results = [];
 
   const b64 = tryBase64(input);
@@ -249,14 +280,11 @@ async function runAnalysis(buf, filename) {
   report += `File: ${filename} | Size: ${buf.length} bytes\n`;
   report += `${"─".repeat(40)}\n\n`;
 
-  // Magic bytes
   const fileType = detectMagicBytes(buf);
   report += `📁 FILE TYPE: ${fileType}\n\n`;
 
-  // Convert to string for text analysis
   const rawText = buf.toString("utf8", 0, 8000);
 
-  // Flag finder
   const flags = findFlags(rawText);
   if (flags.length > 0) {
     report += `🚩 FLAGS FOUND:\n`;
@@ -264,7 +292,6 @@ async function runAnalysis(buf, filename) {
     report += "\n";
   }
 
-  // JWT detection
   const jwtMatch = rawText.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
   if (jwtMatch) {
     const jwt = decodeJWT(jwtMatch[0]);
@@ -275,13 +302,11 @@ async function runAnalysis(buf, filename) {
     }
   }
 
-  // Extract strings
   const strings = extractStrings(buf);
   report += `📝 INTERESTING STRINGS (${strings.length} found):\n`;
   strings.slice(0, 20).forEach(s => report += `  ${s}\n`);
   report += "\n";
 
-  // Multi-layer decode on each interesting string
   report += `🔓 MULTI-LAYER DECODE ATTEMPTS:\n`;
   let decodedAny = false;
   for (const str of strings.slice(0, 30)) {
@@ -295,7 +320,6 @@ async function runAnalysis(buf, filename) {
   if (!decodedAny) report += `  Nothing decoded from strings\n`;
   report += "\n";
 
-  // Caesar brute on short strings
   const shortStrings = strings.filter(s => s.length > 4 && s.length < 50 && /^[a-zA-Z\s]+$/.test(s));
   if (shortStrings.length > 0) {
     report += `🔄 CAESAR BRUTE FORCE (on: "${shortStrings[0]}"):\n`;
@@ -303,7 +327,6 @@ async function runAnalysis(buf, filename) {
     report += "\n";
   }
 
-  // IP/URL/Email extractor
   const ips = rawText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
   const urls = rawText.match(/https?:\/\/[^\s]+/g) || [];
   const emails = rawText.match(/[\w.-]+@[\w.-]+\.\w+/g) || [];
@@ -318,7 +341,6 @@ async function runAnalysis(buf, filename) {
   return report;
 }
 
-// Split long text into chunks smartly at newlines
 function splitIntoChunks(text, maxLength = 2000) {
   const chunks = [];
   while (text.length > 0) {
@@ -334,7 +356,6 @@ function splitIntoChunks(text, maxLength = 2000) {
   return chunks;
 }
 
-// Fetch raw buffer from URL
 async function fetchBuffer(url) {
   const res = await fetch(url);
   const ab = await res.arrayBuffer();
@@ -424,11 +445,10 @@ discord.on("messageCreate", async (message) => {
     const typingInterval = setInterval(() => message.channel.sendTyping(), 8000);
     await message.channel.sendTyping();
 
-    // ── !analyze MODE ────────────────────────────────────────
+    // ── !analyze MODE ─────────────────────────────────────────
     if (isAnalyze) {
       let analysisResults = [];
 
-      // Analyze attached files
       if (allFiles.size > 0) {
         for (const [, file] of allFiles) {
           try {
@@ -441,7 +461,6 @@ discord.on("messageCreate", async (message) => {
         }
       }
 
-      // Analyze pasted text
       if (analyzeInput.length > 0) {
         const buf = Buffer.from(analyzeInput, "utf8");
         const report = await runAnalysis(buf, "pasted_text.txt");
@@ -468,7 +487,7 @@ discord.on("messageCreate", async (message) => {
       return;
     }
 
-    // ── NORMAL CHAT MODE ─────────────────────────────────────
+    // ── NORMAL CHAT MODE ──────────────────────────────────────
     const profile = await getOrCreateProfile(userId, username);
     if (userMessage) await saveMessage(userId, username, "user", userMessage);
     const history = await getHistory(userId);
@@ -497,48 +516,38 @@ discord.on("messageCreate", async (message) => {
       userContent = (userMessage || "Please analyze the attached file.") + fileContext;
     }
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "deepseek/deepseek-r1-0528:free",
-        messages: [
-          {
-            role: "user",
-            content: `You are Zbor AI, an elite CTF player and cybersecurity expert Discord bot. The user is named ${username}. You have known them since ${profile.first_seen}.
+    const reply = await callAI([
+      {
+        role: "user",
+        content: `You are Zbor AI, an elite CTF player and cybersecurity expert Discord bot. The user is named ${username}. You have known them since ${profile.first_seen}.
 
 When solving CTF challenges or analyzing data:
-1. ALWAYS think step by step before giving an answer
-2. NEVER guess — try every possible encoding/decoding
-3. Show your full reasoning process
+1. ALWAYS think step by step before answering
+2. NEVER guess — try every possible encoding/decoding systematically
+3. Show your full reasoning process clearly
 4. If you decode something, decode it AGAIN to check for more layers
 5. Only present the final flag when you are 100% certain
-6. If unsure, say what you tried and what you think the next step is
+6. If unsure, explain exactly what you tried and what the next step should be
+7. Be sharp, precise and confident — you are a CTF god
 
-You have a built-in !analyze tool. You are not a basic chatbot — you are a CTF god.`,
-          },
-          {
-            role: "assistant",
-            content: `Got it! I am Zbor AI, your CTF-ready Discord bot. I'm talking to ${username} and I remember all our previous conversations! Use !analyze + file or text to run my forensics toolkit.`,
-          },
-          ...history,
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
+You have a built-in !analyze tool for forensics. Use it by telling the user to run !analyze on their file.`,
+      },
+      {
+        role: "assistant",
+        content: `Understood. I am Zbor AI — elite CTF bot. Talking to ${username}, known since ${profile.first_seen}. Ready to destroy any challenge.`,
+      },
+      ...history,
+      { role: "user", content: userContent },
+    ]);
 
     clearInterval(typingInterval);
-    const data = await res.json();
-    if (!data.choices || !data.choices[0]) {
-      await message.reply("No response from AI. Try again!");
+
+    if (!reply) {
+      await message.reply("All AI models are currently down. Try again in a minute!");
       processing.delete(message.id);
       return;
     }
 
-    const reply = data.choices[0].message.content;
     await saveMessage(userId, username, "assistant", reply);
 
     const chunks = splitIntoChunks(reply);
