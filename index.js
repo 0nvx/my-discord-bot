@@ -1,6 +1,5 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const discord = new Client({
   intents: [
@@ -10,15 +9,7 @@ const discord = new Client({
   ],
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: "gemini-2.0-flash",
-  systemInstruction: `You are Zbor AI, a helpful and friendly Discord bot assistant. Your name is Zbor AI. If anyone asks what your name is or who you are, tell them you are Zbor AI. Reply in a friendly, clear, and conversational way. Use simple language, be concise, and format your replies nicely for Discord. Use bullet points or numbered lists when helpful.`,
-});
-
-const ALLOWED_CHANNEL_ID = "1479070011778797731"; // channel id 
-
-// Stores conversation history per user
+const ALLOWED_CHANNEL_ID = "1479070011778797731";
 const conversations = {};
 
 discord.on("ready", () => {
@@ -37,15 +28,37 @@ discord.on("messageCreate", async (message) => {
   if (!userMessage) return;
 
   const userId = message.author.id;
-  if (!conversations[userId]) {
-    conversations[userId] = model.startChat({ history: [] });
-  }
+  if (!conversations[userId]) conversations[userId] = [];
+
+  conversations[userId].push({ role: "user", content: userMessage });
+  if (conversations[userId].length > 20)
+    conversations[userId] = conversations[userId].slice(-20);
 
   try {
     await message.channel.sendTyping();
 
-    const result = await conversations[userId].sendMessage(userMessage);
-    const reply = result.response.text();
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "mistralai/mistral-7b-instruct:free",
+        messages: [
+          {
+            role: "system",
+            content: `You are Zbor AI, a helpful and friendly Discord bot. Your name is Zbor AI. Reply in a friendly, clear, conversational way. Be concise and format replies nicely for Discord.`,
+          },
+          ...conversations[userId],
+        ],
+      }),
+    });
+
+    const data = await res.json();
+    const reply = data.choices[0].message.content;
+
+    conversations[userId].push({ role: "assistant", content: reply });
 
     if (reply.length <= 2000) {
       await message.reply(reply);
