@@ -26,44 +26,57 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
+// ── MODELS — Sequential fallback (not race) ──────────
 const MODELS = [
-"mistralai/mistral-7b-instruct:free",
-"gryphe/mythomax-l2-13b:free",
-"undi95/toppy-m-7b:free",
-"qwen/qwen3-235b-a22b:free",
-"meta-llama/llama-3.3-70b-instruct:free",
-"openrouter/auto",
+  "google/gemini-flash-1.5",
+  "deepseek/deepseek-r1:free",
+  "google/gemini-pro",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen3-235b-a22b:free",
+  "mistralai/mistral-7b-instruct:free",
+  "gryphe/mythomax-l2-13b:free",
+  "undi95/toppy-m-7b:free",
 ];
 
-// ── ⚡ FASTER AI: Race all models with 15s timeout ────────────
+// ── Sequential fallback with proper headers ───────
 async function callAI(messages, maxTokens = 600) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  for (const model of MODELS) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
 
-  const promises = MODELS.map(model =>
-    fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ model, messages, max_tokens: maxTokens, transforms: ["middle-out"], route: "fallback" }),
-    })
-    .then(r => r.json())
-    .then(data => {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://discord.com",
+          "X-Title": "Zbor AI Discord Bot",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      clearTimeout(timeout);
+      const data = await res.json();
+
       if (data.choices?.[0]?.message?.content) {
-        console.log(`✅ First response from: ${model}`);
-        clearTimeout(timeout);
+        console.log(`✅ Response from: ${model}`);
         return data.choices[0].message.content;
       }
-      throw new Error(`No valid response from ${model}`);
-    })
-    .catch(err => { console.log(`❌ ${model}: ${err.message}`); throw err; })
-  );
 
-  try { return await Promise.any(promises); }
-  catch { clearTimeout(timeout); console.log("❌ All models failed"); return null; }
+      console.log(`⚠️ No content from ${model}:`, JSON.stringify(data).slice(0, 200));
+    } catch (err) {
+      console.log(`❌ ${model}: ${err.message}`);
+    }
+  }
+
+  console.log("❌ All models failed");
+  return null;
 }
 
 async function initDB() {
@@ -200,7 +213,6 @@ async function searchYouTube(query, maxResults = 5) {
 }
 
 // ── 🎵 SMART MEDIA DETECTION ──────────────────────────────────
-// Detects if user is asking for music/video/movie recommendations in normal chat
 const MEDIA_TRIGGERS = [
   /suggest\s+(me\s+)?(a\s+|some\s+)?(song|songs|music|track|tracks|playlist|album|albums|video|videos|movie|movies|film|films|anime|show|series|podcast)/i,
   /recommend\s+(me\s+)?(a\s+|some\s+)?(song|songs|music|track|tracks|playlist|album|albums|video|videos|movie|movies|film|films)/i,
@@ -224,11 +236,8 @@ const MEDIA_TYPE_MAP = {
 function detectMediaRequest(text) {
   for (const pattern of MEDIA_TRIGGERS) {
     if (pattern.test(text)) {
-      // Extract what type of media
       const typeMatch = text.match(/(song|songs|music|track|tracks|album|albums|playlist|video|videos|movie|movies|film|films|anime|show|series|podcast)/i);
       const mediaType = typeMatch ? MEDIA_TYPE_MAP[typeMatch[0].toLowerCase()] || "track" : "track";
-
-      // Try to extract genre or mood or artist
       const genreMoods = ["pop", "rock", "rap", "hip hop", "jazz", "classical", "lofi", "lo-fi", "chill", "sad", "happy",
         "hype", "workout", "study", "sleep", "arabic", "arabic pop", "k-pop", "edm", "r&b", "rnb", "metal", "indie",
         "romantic", "party", "calm", "relaxing", "motivational", "gym"];
@@ -236,7 +245,6 @@ function detectMediaRequest(text) {
       for (const g of genreMoods) {
         if (text.toLowerCase().includes(g)) { genre = g; break; }
       }
-
       return { detected: true, mediaType, genre };
     }
   }
@@ -244,7 +252,6 @@ function detectMediaRequest(text) {
 }
 
 async function getMediaSuggestions(userMessage, mediaType, genre) {
-  // Ask AI to suggest specific titles, then search for them
   const aiPrompt = `The user said: "${userMessage}"
 They want ${mediaType} recommendations${genre ? ` with a "${genre}" vibe/genre` : ""}.
 Reply with ONLY a JSON array of 3 search queries to find on YouTube/Spotify. Example:
@@ -260,7 +267,6 @@ No explanation, just the JSON array.`;
 
   const results = [];
 
-  // Try Spotify first for music
   if (mediaType === "track" || mediaType === "album") {
     for (const q of queries.slice(0, 3)) {
       const spotify = await searchSpotify(q, mediaType === "album" ? "album" : "track");
@@ -270,7 +276,6 @@ No explanation, just the JSON array.`;
     }
   }
 
-  // YouTube for videos or as fallback
   const ytQuery = queries[0] || (genre ? `${genre} ${mediaType}` : `best ${mediaType}`);
   const ytResults = await searchYouTube(ytQuery, 3);
   if (ytResults) {
@@ -284,7 +289,6 @@ No explanation, just the JSON array.`;
 
 // ── ⏰ SCHEDULED MENTIONS ─────────────────────────────────────
 function parseScheduleInterval(str) {
-  // e.g. "every day", "every 2 hours", "every 30 minutes", "every week"
   const patterns = [
     { regex: /every\s+day|daily/i, ms: 86400000, label: "daily" },
     { regex: /every\s+week|weekly/i, ms: 604800000, label: "weekly" },
@@ -307,7 +311,6 @@ function parseScheduleInterval(str) {
   return null;
 }
 
-// Detect if someone is asking to be mentioned/reminded on a schedule in chat
 function detectScheduleRequest(text) {
   const patterns = [
     /mention\s+me\s+(every\s+\w+|\w+ly)/i,
@@ -333,7 +336,7 @@ async function checkScheduledMentions() {
   } catch (e) { console.error("Schedule check error:", e.message); }
 }
 
-// ── REMINDER SYSTEM ──────────────────────────────────────────
+// ── REMINDER SYSTEM ───────────────────────────────────────────
 function parseRemindTime(str) {
   const match = str.match(/(\d+)\s*(s|sec|m|min|h|hr|d|day)/i);
   if (!match) return null;
@@ -371,7 +374,6 @@ function renderHangman(userId) {
   const game = activeGames[userId];
   if (!game || game.type !== "hangman") return null;
 
-  // FIX: spaces between letters so missing ones are clearly visible
   const display = game.word.split("").map(c => game.guessed.includes(c) ? c : "_").join("  ");
   const wrongLetters = game.guessed.filter(c => !game.word.includes(c)).join("  ");
 
@@ -407,7 +409,7 @@ function guessHangman(userId, letter) {
   return renderHangman(userId);
 }
 
-// ── 🔢 NUMBER GUESSING GAME ──────────────────────────────────
+// ── 🔢 NUMBER GUESSING GAME ───────────────────────────────────
 function startNumberGame(userId, max = 100) {
   const target = Math.floor(Math.random() * max) + 1;
   activeGames[userId] = { type: "number", target, max, attempts: 0, maxAttempts: 8 };
@@ -444,7 +446,7 @@ function scrambleWord(word) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   const result = arr.join("");
-  return result === word ? scrambleWord(word) : result; // re-scramble if same
+  return result === word ? scrambleWord(word) : result;
 }
 
 function startScramble(userId) {
@@ -516,24 +518,17 @@ function guessTrivia(userId, input) {
   return `❌ **Wrong!** One more chance! ${!game.hintUsed ? "Use `!hint` if you need help." : ""}`;
 }
 
-// ── Universal guess handler ───────────────────────────────────
 function handleGuess(userId, input) {
   const game = activeGames[userId];
   if (!game) return "You don't have an active game! Start one with `!hangman`, `!numgame`, `!scramble`, or `!trivia`";
-
-  if (game.type === "hangman") {
-    return guessHangman(userId, input.charAt(0));
-  } else if (game.type === "number") {
-    return guessNumber(userId, input);
-  } else if (game.type === "scramble") {
-    return guessScramble(userId, input);
-  } else if (game.type === "trivia") {
-    return guessTrivia(userId, input);
-  }
+  if (game.type === "hangman") return guessHangman(userId, input.charAt(0));
+  else if (game.type === "number") return guessNumber(userId, input);
+  else if (game.type === "scramble") return guessScramble(userId, input);
+  else if (game.type === "trivia") return guessTrivia(userId, input);
   return "Unknown game state. Start a new game!";
 }
 
-// ── HASH TOOLS ───────────────────────────────────────────────
+// ── HASH TOOLS ────────────────────────────────────────────────
 function hashText(text) {
   return {
     md5: crypto.createHash("md5").update(text).digest("hex"),
@@ -543,7 +538,7 @@ function hashText(text) {
   };
 }
 
-// ── ANALYSIS TOOLS ───────────────────────────────────────────
+// ── ANALYSIS TOOLS ────────────────────────────────────────────
 function detectMagicBytes(buf) {
   const hex = buf.slice(0, 16).toString("hex").toUpperCase();
   const sigs = {
@@ -792,7 +787,7 @@ async function generateDOCX(title, content) {
   return tmpPath;
 }
 
-// ── 🖼️ BANNER GENERATION ──────────────────────────────────────
+// ── 🖼️ BANNER GENERATION ─────────────────────────────────────
 function generateBanner(name, subtitle = "Zbor AI Member", style = "cyber") {
   const width = 900, height = 300;
   const canvas = createCanvas(width, height);
@@ -848,6 +843,52 @@ function generateBanner(name, subtitle = "Zbor AI Member", style = "cyber") {
   const tmpPath = `/tmp/banner_${Date.now()}.png`;
   fs.writeFileSync(tmpPath, canvas.toBuffer("image/png"));
   return tmpPath;
+}
+
+// ── ✅ UPGRADED IMAGE GENERATION ──────────────────────────────
+async function generateImageAdvanced(prompt, style = "flux") {
+  const seed = Math.floor(Math.random() * 999999);
+  const models = ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"];
+  const selectedModel = models.includes(style) ? style : "flux";
+
+  const providers = [
+    {
+      name: selectedModel,
+      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=${selectedModel}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true`,
+    },
+    {
+      name: "flux-fallback",
+      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux&width=1024&height=1024&seed=${seed + 1}&nologo=true&enhance=true`,
+    },
+    {
+      name: "turbo-fallback",
+      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=turbo&width=1024&height=1024&seed=${seed + 2}&nologo=true`,
+    },
+  ];
+
+  for (const provider of providers) {
+    try {
+      const url = provider.getUrl();
+      const testRes = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(12000) });
+      if (testRes.ok) {
+        console.log(`✅ Image from: ${provider.name}`);
+        return { url, provider: provider.name };
+      }
+    } catch (e) {
+      console.log(`❌ Image provider ${provider.name}: ${e.message}`);
+    }
+  }
+
+  // Last resort — return first URL anyway and let Discord try to fetch it
+  return { url: providers[0].getUrl(), provider: "flux-direct" };
+}
+
+// ── ✅ LOGO GENERATION ────────────────────────────────────────
+async function generateLogo(concept) {
+  const logoPrompt = `professional logo design for ${concept}, minimalist vector art, clean modern design, bold typography, geometric shapes, transparent background or white background, high contrast, scalable graphic, no gradients, flat design, iconic symbol`;
+  const seed = Math.floor(Math.random() * 999999);
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(logoPrompt)}?model=flux&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true`;
+  return url;
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
@@ -1036,7 +1077,6 @@ discord.on("messageCreate", async (message) => {
     if (lower.startsWith("!schedule")) {
       const input = userMessage.replace(/^!schedule/i, "").trim();
 
-      // !schedule list
       if (input.toLowerCase() === "list") {
         const res = await pool.query(`SELECT * FROM scheduled_mentions WHERE user_id = $1 AND active = TRUE ORDER BY id`, [userId]);
         clearInterval(typingInterval);
@@ -1047,7 +1087,6 @@ discord.on("messageCreate", async (message) => {
         processing.delete(message.id); return;
       }
 
-      // !schedule stop [id]
       const stopMatch = input.match(/^stop\s+(\d+)/i);
       if (stopMatch) {
         await pool.query(`UPDATE scheduled_mentions SET active = FALSE WHERE id = $1 AND user_id = $2`, [stopMatch[1], userId]);
@@ -1056,7 +1095,6 @@ discord.on("messageCreate", async (message) => {
         processing.delete(message.id); return;
       }
 
-      // !schedule [every X] [message]
       const interval = parseScheduleInterval(input);
       if (!interval) {
         clearInterval(typingInterval);
@@ -1251,16 +1289,61 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 🎨 !imagine ───────────────────────────────────────────
+    // ── ✅ UPGRADED !imagine ───────────────────────────────────
     if (lower.startsWith("!imagine") || lower.startsWith("!image")) {
-      const prompt = userMessage.replace(/^!(imagine|image)/i, "").trim();
-      if (!prompt) { clearInterval(typingInterval); await message.reply("Usage: `!imagine a hacker cat with neon lights`"); processing.delete(message.id); return; }
-      try {
-        const seed = Math.floor(Math.random() * 99999);
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=768&seed=${seed}&nologo=true&enhance=true`;
+      const rawPrompt = userMessage.replace(/^!(imagine|image)/i, "").trim();
+      if (!rawPrompt) {
         clearInterval(typingInterval);
-        await message.reply({ content: `🎨 **"${prompt}"**`, files: [{ attachment: imageUrl, name: "generated.png" }] });
-      } catch (e) { clearInterval(typingInterval); await message.reply(`❌ Image generation failed: ${e.message}`); }
+        await message.reply("Usage: `!imagine a hacker cat with neon lights`\nStyles: `--flux` `--anime` `--realism` `--3d` `--turbo`");
+        processing.delete(message.id); return;
+      }
+
+      // Parse style flag
+      const styleMatch = rawPrompt.match(/--(\w+)/);
+      const style = styleMatch ? styleMatch[1].toLowerCase() : "flux";
+      const cleanPrompt = rawPrompt.replace(/--\w+/g, "").trim();
+
+      try {
+        // AI enhance the prompt first
+        const enhanced = await callAI([{
+          role: "user",
+          content: `Enhance this image generation prompt to be more vivid, detailed and descriptive. Add artistic style, lighting, quality keywords. Return ONLY the enhanced prompt, nothing else, max 100 words: "${cleanPrompt}"`
+        }], 150);
+
+        const finalPrompt = enhanced?.trim() || cleanPrompt;
+        const result = await generateImageAdvanced(finalPrompt, style);
+
+        clearInterval(typingInterval);
+        await message.reply({
+          content: `🎨 **"${cleanPrompt}"**\n*✨ Rendered with ${result.provider} — AI enhanced*`,
+          files: [{ attachment: result.url, name: "generated.png" }]
+        });
+      } catch (e) {
+        clearInterval(typingInterval);
+        await message.reply(`❌ Image generation failed: ${e.message}`);
+      }
+      processing.delete(message.id); return;
+    }
+
+    // ── ✅ NEW !logo command ───────────────────────────────────
+    if (lower.startsWith("!logo")) {
+      const concept = userMessage.replace(/^!logo/i, "").trim();
+      if (!concept) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!logo your brand or concept`\nExample: `!logo cybersecurity startup blue neon theme`");
+        processing.delete(message.id); return;
+      }
+      try {
+        const logoUrl = await generateLogo(concept);
+        clearInterval(typingInterval);
+        await message.reply({
+          content: `🏷️ **Logo: "${concept}"**\n*Professional logo generated with Flux AI*`,
+          files: [{ attachment: logoUrl, name: "logo.png" }]
+        });
+      } catch (e) {
+        clearInterval(typingInterval);
+        await message.reply(`❌ Logo generation failed: ${e.message}`);
+      }
       processing.delete(message.id); return;
     }
 
@@ -1273,7 +1356,9 @@ discord.on("messageCreate", async (message) => {
   !hash [text]              — MD5/SHA1/SHA256/SHA512
 
 🎨 AI & Media
-  !imagine [prompt]         — Generate an AI image
+  !imagine [prompt]         — Generate AI image (Flux)
+                              Add --anime --realism --3d --turbo
+  !logo [concept]           — Generate a professional logo ✨
   !banner [name|sub|style]  — Make a profile banner
                               Styles: cyber fire nature ocean gold
 
@@ -1322,7 +1407,7 @@ discord.on("messageCreate", async (message) => {
     if (userMessage) await saveMessage(userId, username, "user", userMessage);
     const history = await getHistory(userId);
 
-    // ── 🎵 SMART MEDIA DETECTION (in normal chat) ─────────────
+    // ── 🎵 SMART MEDIA DETECTION ──────────────────────────────
     const mediaCheck = detectMediaRequest(userMessage);
     if (mediaCheck.detected && images.size === 0 && allFiles.size === 0) {
       const suggestions = await getMediaSuggestions(userMessage, mediaCheck.mediaType, mediaCheck.genre);
@@ -1338,11 +1423,10 @@ discord.on("messageCreate", async (message) => {
       }
     }
 
-    // ── 📅 SMART SCHEDULE DETECTION (in normal chat) ──────────
+    // ── 📅 SMART SCHEDULE DETECTION ───────────────────────────
     if (detectScheduleRequest(userMessage)) {
       const interval = parseScheduleInterval(userMessage);
       if (interval) {
-        // Extract message after the schedule pattern
         const msgPart = userMessage.replace(/mention\s+me|remind\s+me|ping\s+me|tell\s+me/i, "")
           .replace(/every\s+\w+(\s+\w+)?/i, "").trim()
           || "Hey! Zbor AI scheduled mention ⚡";
@@ -1397,7 +1481,7 @@ IMPORTANT — REPLY LENGTH:
 - Technical/CTF → as long as needed, step by step
 
 You know about these commands if they ever ask what you can do:
-!analyze, !hash, !imagine, !banner, !pdf, !doc, !search, !youtube, !spotify, !roll, !flip, !hangman, !numgame, !scramble, !trivia, !guess, !hint, !remind, !schedule, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
+!analyze, !hash, !imagine (with --anime --realism --3d --turbo flags), !logo, !banner, !pdf, !doc, !search, !youtube, !spotify, !roll, !flip, !hangman, !numgame, !scramble, !trivia, !guess, !hint, !remind, !schedule, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
       },
       {
         role: "assistant",
