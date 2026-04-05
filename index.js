@@ -71,7 +71,8 @@ async function readFileContent(url) {
     const res = await fetch(url);
     const text = await res.text();
     return text.slice(0, 8000);
-  } catch {
+  } catch (err) {
+    console.error("File read error:", err);
     return null;
   }
 }
@@ -79,11 +80,16 @@ async function readFileContent(url) {
 // Fetch and read text from a PDF URL
 async function readPdfContent(url) {
   try {
+    console.log("Fetching PDF from:", url);
     const res = await fetch(url);
     const buffer = await res.arrayBuffer();
+    console.log("PDF buffer size:", buffer.byteLength);
     const data = await pdfParse(Buffer.from(buffer));
+    console.log("PDF text extracted:", data.text);
+    console.log("PDF pages:", data.numpages);
     return data.text.slice(0, 8000);
-  } catch {
+  } catch (err) {
+    console.error("PDF read error:", err);
     return null;
   }
 }
@@ -145,11 +151,14 @@ discord.on("messageCreate", async (message) => {
 
     // Read PDF contents
     for (const [, file] of pdfFiles) {
+      console.log("Processing PDF:", file.name);
       const content = await readPdfContent(file.url);
-      if (content) {
-        fileContext += `\n\n📄 PDF File: ${file.name}\n\`\`\`\n${content}\n\`\`\``;
+      if (content && content.trim().length > 0) {
+        console.log("PDF content found, length:", content.length);
+        fileContext += `\n\n📄 PDF File: ${file.name}\nFull extracted text (including any hidden text):\n\`\`\`\n${content}\n\`\`\``;
       } else {
-        fileContext += `\n\n📄 Could not read PDF: ${file.name}. Ask the user to copy paste the text instead.`;
+        console.log("PDF appears empty or unreadable");
+        fileContext += `\n\n📄 PDF "${file.name}" appears to have no readable text. It may use images or special encoding.`;
       }
     }
 
