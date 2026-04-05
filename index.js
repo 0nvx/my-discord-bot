@@ -26,33 +26,51 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
-// ── MODELS — Sequential fallback (not race) ──────────
+// ── SYSTEM PROMPT ─────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are Zbor AI, a chill, funny, unhinged Discord bot.
+- Casual and funny like texting a smart friend
+- Short replies for casual chat (1-3 sentences), detailed for technical/CTF
+- Never use bullet points in normal chat, just talk
+- Play along with edgy jokes, don't lecture
+- Switch to elite CTF/security mode when needed
+- If someone asks something silly, be sarcastic and funny about it
+- Stop being a safety bot. Jump into the chaos.`;
+
+// ── MODELS ────────────────────────────────────────────────────
 const MODELS = [
-  "deepseek/deepseek-chat",
-  "meta-llama/llama-3.1-70b-instruct",
-  "mistralai/mistral-7b-instruct",
-  "google/gemini-flash-1.5"
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "deepseek/deepseek-r1:free",
+  "qwen/qwen3-235b-a22b:free",
+  "mistralai/mistral-7b-instruct:free",
+  "gryphe/mythomax-l2-13b:free",
 ];
 
-// ── Sequential fallback with proper headers ───────
+// ── AI CALL — Sequential fallback ────────────────────────────
 async function callAI(messages, maxTokens = 600) {
- const finalMessages = [{ role: "system", content: SYSTEM_PROMPT }, ...messages];
-for (const model of MODELS) {
+  const finalMessages = [{ role: "system", content: SYSTEM_PROMPT }, ...messages];
+
+  for (const model of MODELS) {
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
 
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
+        signal: controller.signal,
         headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://discord.com",
+          "X-Title": "Zbor AI Discord Bot",
         },
         body: JSON.stringify({
-          model: model,
+          model,
           messages: finalMessages,
-          max_tokens: maxTokens
-        })
+          max_tokens: maxTokens,
+        }),
       });
 
+      clearTimeout(timeout);
       const data = await res.json();
 
       if (data.error) {
@@ -60,19 +78,20 @@ for (const model of MODELS) {
         continue;
       }
 
-      if (data.choices && data.choices.length > 0) {
+      if (data.choices?.[0]?.message?.content) {
         console.log(`✅ Working model: ${model}`);
         return data.choices[0].message.content;
       }
-
     } catch (err) {
       console.log(`❌ ${model} failed:`, err.message);
     }
   }
 
+  console.log("❌ All models failed");
   return null;
 }
 
+// ── DATABASE ──────────────────────────────────────────────────
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -125,7 +144,10 @@ async function getOrCreateProfile(userId, username) {
   return { user_id: userId, username, first_seen: firstSeen };
 }
 
-// ── 🎵 SPOTIFY TOKEN ──────────────────────────────────────────
+// ── NAME MEMORY ───────────────────────────────────────────────
+const userNames = {};
+
+// ── SPOTIFY ───────────────────────────────────────────────────
 let spotifyToken = null;
 let spotifyTokenExpiry = 0;
 
@@ -166,7 +188,7 @@ async function searchSpotify(query, type = "track") {
   } catch { return null; }
 }
 
-// ── 📺 YOUTUBE SEARCH ─────────────────────────────────────────
+// ── YOUTUBE ───────────────────────────────────────────────────
 async function searchYouTube(query, maxResults = 5) {
   try {
     if (YOUTUBE_API_KEY) {
@@ -181,15 +203,12 @@ async function searchYouTube(query, maxResults = 5) {
       }));
     } else {
       const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-      const res = await fetch(searchUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
-      });
+      const res = await fetch(searchUrl, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" } });
       const html = await res.text();
       const jsonMatch = html.match(/var ytInitialData = ({.+?});<\/script>/);
       if (!jsonMatch) return null;
       const ytData = JSON.parse(jsonMatch[1]);
-      const contents = ytData?.contents?.twoColumnSearchResultsRenderer?.primaryContents
-        ?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents || [];
+      const contents = ytData?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents || [];
       const videos = [];
       for (const item of contents) {
         if (item.videoRenderer) {
@@ -206,7 +225,7 @@ async function searchYouTube(query, maxResults = 5) {
   } catch (err) { console.error("YouTube search error:", err.message); return null; }
 }
 
-// ── 🎵 SMART MEDIA DETECTION ──────────────────────────────────
+// ── SMART MEDIA DETECTION ─────────────────────────────────────
 const MEDIA_TRIGGERS = [
   /suggest\s+(me\s+)?(a\s+|some\s+)?(song|songs|music|track|tracks|playlist|album|albums|video|videos|movie|movies|film|films|anime|show|series|podcast)/i,
   /recommend\s+(me\s+)?(a\s+|some\s+)?(song|songs|music|track|tracks|playlist|album|albums|video|videos|movie|movies|film|films)/i,
@@ -236,9 +255,7 @@ function detectMediaRequest(text) {
         "hype", "workout", "study", "sleep", "arabic", "arabic pop", "k-pop", "edm", "r&b", "rnb", "metal", "indie",
         "romantic", "party", "calm", "relaxing", "motivational", "gym"];
       let genre = "";
-      for (const g of genreMoods) {
-        if (text.toLowerCase().includes(g)) { genre = g; break; }
-      }
+      for (const g of genreMoods) { if (text.toLowerCase().includes(g)) { genre = g; break; } }
       return { detected: true, mediaType, genre };
     }
   }
@@ -248,7 +265,7 @@ function detectMediaRequest(text) {
 async function getMediaSuggestions(userMessage, mediaType, genre) {
   const aiPrompt = `The user said: "${userMessage}"
 They want ${mediaType} recommendations${genre ? ` with a "${genre}" vibe/genre` : ""}.
-Reply with ONLY a JSON array of 3 search queries to find on YouTube/Spotify. Example:
+Reply with ONLY a JSON array of 3 search queries. Example:
 ["Dua Lipa Levitating", "The Weeknd Blinding Lights", "Harry Styles Watermelon Sugar"]
 No explanation, just the JSON array.`;
 
@@ -260,28 +277,19 @@ No explanation, just the JSON array.`;
   } catch { queries = [genre ? `${genre} ${mediaType}` : `popular ${mediaType} 2024`]; }
 
   const results = [];
-
   if (mediaType === "track" || mediaType === "album") {
     for (const q of queries.slice(0, 3)) {
       const spotify = await searchSpotify(q, mediaType === "album" ? "album" : "track");
-      if (spotify?.[0]) {
-        results.push({ platform: "Spotify 🎵", title: spotify[0].name, artist: spotify[0].artist, url: spotify[0].url });
-      }
+      if (spotify?.[0]) results.push({ platform: "Spotify 🎵", title: spotify[0].name, artist: spotify[0].artist, url: spotify[0].url });
     }
   }
-
   const ytQuery = queries[0] || (genre ? `${genre} ${mediaType}` : `best ${mediaType}`);
   const ytResults = await searchYouTube(ytQuery, 3);
-  if (ytResults) {
-    ytResults.slice(0, 3).forEach(v => {
-      results.push({ platform: "YouTube 📺", title: v.title, artist: v.channel, url: v.url });
-    });
-  }
-
+  if (ytResults) ytResults.slice(0, 3).forEach(v => results.push({ platform: "YouTube 📺", title: v.title, artist: v.channel, url: v.url }));
   return results;
 }
 
-// ── ⏰ SCHEDULED MENTIONS ─────────────────────────────────────
+// ── SCHEDULE ──────────────────────────────────────────────────
 function parseScheduleInterval(str) {
   const patterns = [
     { regex: /every\s+day|daily/i, ms: 86400000, label: "daily" },
@@ -291,7 +299,6 @@ function parseScheduleInterval(str) {
     { regex: /every\s+(\d+)\s*(hour|hr|h)\b/i, ms: null, label: null },
     { regex: /every\s+(\d+)\s*(day|d)\b/i, ms: null, label: null },
   ];
-
   for (const p of patterns) {
     const match = str.match(p.regex);
     if (match) {
@@ -329,57 +336,8 @@ async function checkScheduledMentions() {
     }
   } catch (e) { console.error("Schedule check error:", e.message); }
 }
-//--------------------------------------------------
 
-//-------------------------
-const userNames = {};
-
-// ── SYSTEM PROMPT  ──────────────────────────
-const SYSTEM_PROMPT = `
-You are Zbor AI, a Discord assistant.
-
-Rules:
-- If a user tells you their name (example: "my name is X"), remember it.
-- If someone later asks "what is the name of USER", you can repeat the name they told you.
-- This is NOT private information because the user said it publicly.
-- Do NOT refuse to answer if the user already shared the name in chat.
-- Be casual and funny like a Discord bot.
-- Switch to elite CTF/security mode when they need help with challenges.
-- Casual chat -> 1-3 sentences max.
-- Questions -> answer directly, no padding.
-- Stop being a "safety bot". If users are joking and using slang like "femboy" or "edgy" terms, jump in and use them too. Don't lecture them about privacy.
-`;
-// -------------------------------------------------------------
-//------------------------------------------------------
-discord.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-
-  const content = message.content.toLowerCase();
-
-  // Logic for saving names
-  if (content.includes("name this guy") || content.includes("his name is")) {
-    const mentionedUser = message.mentions.users.first();
-    const nameMatch = message.content.match(/"([^"]+)"|is\s+([a-zA-Z0-9]+)/i);
-    const chosenName = nameMatch ? (nameMatch[1] || nameMatch[2]) : null;
-
-    if (mentionedUser && chosenName) {
-      userNames[mentionedUser.id] = chosenName;
-      return message.reply(`Done! I'll remember ${mentionedUser.username} as **${chosenName}** from now on. 😉`);
-    }
-  }
-
-  // Logic for replying with names (Bypasses AI)
-  if (content.includes("what is the name of") || content.includes("what's the name of")) {
-    const mentionedUser = message.mentions.users.first();
-    if (mentionedUser && userNames[mentionedUser.id]) {
-      return message.reply(`Pretty sure he said his name is **${userNames[mentionedUser.id]}** 😆`);
-    }
-  }
-});
- 
-
-//--------------------------------
-// ── REMINDER SYSTEM ───────────────────────────────────────────
+// ── REMINDERS ─────────────────────────────────────────────────
 function parseRemindTime(str) {
   const match = str.match(/(\d+)\s*(s|sec|m|min|h|hr|d|day)/i);
   if (!match) return null;
@@ -402,7 +360,7 @@ async function checkReminders() {
   } catch (e) { console.error("Reminder check error:", e.message); }
 }
 
-// ── 🎮 GAMES ──────────────────────────────────────────────────
+// ── GAMES ─────────────────────────────────────────────────────
 const hangmanWords = ["cybersecurity", "discord", "javascript", "python", "hacking", "encryption",
   "firewall", "noshelter", "algorithm", "database", "blockchain", "cryptocurrency", "artificial", "intelligence"];
 const activeGames = {};
@@ -416,10 +374,8 @@ function startHangman(userId) {
 function renderHangman(userId) {
   const game = activeGames[userId];
   if (!game || game.type !== "hangman") return null;
-
   const display = game.word.split("").map(c => game.guessed.includes(c) ? c : "_").join("  ");
   const wrongLetters = game.guessed.filter(c => !game.word.includes(c)).join("  ");
-
   const gallows = [
     "```\n  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========```",
     "```\n  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========```",
@@ -429,12 +385,10 @@ function renderHangman(userId) {
     "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========```",
     "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========```",
   ];
-
   let status = gallows[game.wrong];
   status += `\n**Word:** \`${display}\``;
   status += `\n**Wrong letters (${game.wrong}/${game.maxWrong}):** ${wrongLetters || "none yet"}`;
   status += `\n**Letters left:** ${Math.max(0, 6 - game.wrong)} chances`;
-
   const won = !game.word.split("").some(c => !game.guessed.includes(c));
   if (won) { delete activeGames[userId]; return status + "\n\n🎉 **You won! Nice one!**"; }
   if (game.wrong >= game.maxWrong) { const w = game.word; delete activeGames[userId]; return status + `\n\n💀 **Game over!** The word was: **${w}**`; }
@@ -452,11 +406,10 @@ function guessHangman(userId, letter) {
   return renderHangman(userId);
 }
 
-// ── 🔢 NUMBER GUESSING GAME ───────────────────────────────────
 function startNumberGame(userId, max = 100) {
   const target = Math.floor(Math.random() * max) + 1;
   activeGames[userId] = { type: "number", target, max, attempts: 0, maxAttempts: 8 };
-  return `🔢 **Number Guessing Game!**\nI'm thinking of a number between **1 and ${max}**.\nYou have **${8} attempts**. Type \`!guess [number]\` to guess!`;
+  return `🔢 **Number Guessing Game!**\nI'm thinking of a number between **1 and ${max}**.\nYou have **8 attempts**. Type \`!guess [number]\` to guess!`;
 }
 
 function guessNumber(userId, input) {
@@ -466,28 +419,18 @@ function guessNumber(userId, input) {
   if (isNaN(guess)) return "That's not a number! Use `!guess 42`";
   game.attempts++;
   const remaining = game.maxAttempts - game.attempts;
-  if (guess === game.target) {
-    delete activeGames[userId];
-    return `🎉 **Correct! The number was ${game.target}!** You got it in **${game.attempts}** attempts!`;
-  }
-  if (game.attempts >= game.maxAttempts) {
-    const t = game.target; delete activeGames[userId];
-    return `💀 **Out of attempts!** The number was **${t}**. Better luck next time!`;
-  }
+  if (guess === game.target) { delete activeGames[userId]; return `🎉 **Correct! The number was ${game.target}!** You got it in **${game.attempts}** attempts!`; }
+  if (game.attempts >= game.maxAttempts) { const t = game.target; delete activeGames[userId]; return `💀 **Out of attempts!** The number was **${t}**. Better luck next time!`; }
   const hint = guess < game.target ? "📈 **Too low!**" : "📉 **Too high!**";
   return `${hint} Attempts left: **${remaining}**. Guess again with \`!guess [number]\``;
 }
 
-// ── 🔀 WORD SCRAMBLE GAME ─────────────────────────────────────
 const scrambleWords = ["python", "discord", "hacker", "keyboard", "monitor", "network", "database",
   "javascript", "server", "browser", "password", "firewall", "algorithm", "terminal", "compiler"];
 
 function scrambleWord(word) {
   const arr = word.split("");
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
+  for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
   const result = arr.join("");
   return result === word ? scrambleWord(word) : result;
 }
@@ -504,18 +447,11 @@ function guessScramble(userId, input) {
   if (!game || game.type !== "scramble") return null;
   game.attempts++;
   const remaining = game.maxAttempts - game.attempts;
-  if (input.toLowerCase() === game.word) {
-    delete activeGames[userId];
-    return `🎉 **Correct!** The word was **${game.word}**! You got it in ${game.attempts} attempt${game.attempts !== 1 ? "s" : ""}!`;
-  }
-  if (game.attempts >= game.maxAttempts) {
-    const w = game.word; delete activeGames[userId];
-    return `💀 **Out of guesses!** The word was **${w}**. The scramble was: \`${game.scrambled.toUpperCase()}\``;
-  }
+  if (input.toLowerCase() === game.word) { delete activeGames[userId]; return `🎉 **Correct!** The word was **${game.word}**! You got it in ${game.attempts} attempt${game.attempts !== 1 ? "s" : ""}!`; }
+  if (game.attempts >= game.maxAttempts) { const w = game.word; delete activeGames[userId]; return `💀 **Out of guesses!** The word was **${w}**. The scramble was: \`${game.scrambled.toUpperCase()}\``; }
   return `❌ Wrong! Attempts left: **${remaining}**. The scramble: **\`${game.scrambled.toUpperCase()}\`** — try again with \`!guess [answer]\``;
 }
 
-// ── 🧠 TRIVIA GAME ────────────────────────────────────────────
 const triviaQuestions = [
   { q: "What does HTTP stand for?", a: "hypertext transfer protocol", hint: "It's a web protocol" },
   { q: "What language runs in web browsers?", a: "javascript", hint: "It's not Java 👀" },
@@ -549,15 +485,8 @@ function guessTrivia(userId, input) {
   if (!game || game.type !== "trivia") return null;
   game.attempts++;
   const correct = input.toLowerCase().includes(game.a.toLowerCase()) || game.a.toLowerCase().includes(input.toLowerCase());
-  if (correct) {
-    delete activeGames[userId];
-    const bonus = game.hintUsed ? "" : " (no hint used! 🔥)";
-    return `✅ **Correct!** The answer was: **${game.a}**${bonus}`;
-  }
-  if (game.attempts >= game.maxAttempts) {
-    const ans = game.a; delete activeGames[userId];
-    return `❌ **Wrong!** The correct answer was: **${ans}**. Better luck next time!`;
-  }
+  if (correct) { delete activeGames[userId]; return `✅ **Correct!** The answer was: **${game.a}**${game.hintUsed ? "" : " (no hint used! 🔥)"}`; }
+  if (game.attempts >= game.maxAttempts) { const ans = game.a; delete activeGames[userId]; return `❌ **Wrong!** The correct answer was: **${ans}**. Better luck next time!`; }
   return `❌ **Wrong!** One more chance! ${!game.hintUsed ? "Use `!hint` if you need help." : ""}`;
 }
 
@@ -571,7 +500,7 @@ function handleGuess(userId, input) {
   return "Unknown game state. Start a new game!";
 }
 
-// ── HASH TOOLS ────────────────────────────────────────────────
+// ── HASH ──────────────────────────────────────────────────────
 function hashText(text) {
   return {
     md5: crypto.createHash("md5").update(text).digest("hex"),
@@ -581,7 +510,7 @@ function hashText(text) {
   };
 }
 
-// ── ANALYSIS TOOLS ────────────────────────────────────────────
+// ── CTF ANALYSIS ──────────────────────────────────────────────
 function detectMagicBytes(buf) {
   const hex = buf.slice(0, 16).toString("hex").toUpperCase();
   const sigs = {
@@ -666,8 +595,7 @@ function tryMorse(str) {
 }
 
 function tryUrlDecode(str) {
-  try { const decoded = decodeURIComponent(str); if (decoded === str) return null; return decoded; }
-  catch { return null; }
+  try { const decoded = decodeURIComponent(str); if (decoded === str) return null; return decoded; } catch { return null; }
 }
 
 function decodeJWT(token) {
@@ -726,24 +654,22 @@ async function runAnalysis(buf, filename) {
     if (result) { report += `  Input: ${str.slice(0, 60)}\n  ${result}\n\n`; decodedAny = true; }
   }
   if (!decodedAny) report += `  Nothing decoded from strings\n`;
-  report += "\n";
   const shortStrings = strings.filter(s => s.length > 4 && s.length < 50 && /^[a-zA-Z\s]+$/.test(s));
   if (shortStrings.length > 0) {
-    report += `🔄 CAESAR BRUTE FORCE (on: "${shortStrings[0]}"):\n`;
+    report += `\n🔄 CAESAR BRUTE FORCE (on: "${shortStrings[0]}"):\n`;
     tryCaesarBrute(shortStrings[0]).slice(0, 5).forEach(r => report += `  ${r}\n`);
-    report += "\n";
   }
   const ips = rawText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
   const urls = rawText.match(/https?:\/\/[^\s]+/g) || [];
   const emails = rawText.match(/[\w.-]+@[\w.-]+\.\w+/g) || [];
-  if (ips.length) report += `🌐 IPs FOUND: ${[...new Set(ips)].join(", ")}\n`;
+  if (ips.length) report += `\n🌐 IPs FOUND: ${[...new Set(ips)].join(", ")}\n`;
   if (urls.length) report += `🔗 URLs FOUND: ${[...new Set(urls)].join(", ")}\n`;
   if (emails.length) report += `📧 EMAILS FOUND: ${[...new Set(emails)].join(", ")}\n`;
   report += `\n${"─".repeat(40)}\n✅ Analysis complete!\n\`\`\``;
   return report;
 }
 
-// ── 🌐 WEB SEARCH ─────────────────────────────────────────────
+// ── WEB SEARCH ────────────────────────────────────────────────
 async function webSearch(query) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
@@ -762,7 +688,7 @@ async function webSearch(query) {
   } catch (err) { console.error("Search error:", err.message); return null; }
 }
 
-// ── 📄 PDF GENERATION ─────────────────────────────────────────
+// ── PDF ───────────────────────────────────────────────────────
 async function generatePDF(title, content) {
   return new Promise((resolve, reject) => {
     const tmpPath = `/tmp/zbor_${Date.now()}.pdf`;
@@ -777,8 +703,7 @@ async function generatePDF(title, content) {
     doc.moveDown(0.4);
     doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).strokeColor("#00d4ff").lineWidth(2).stroke();
     doc.moveDown(1);
-    doc.fillColor("#888888").fontSize(10).font("Helvetica")
-       .text(`Generated on ${new Date().toLocaleString()} by Zbor AI`, { align: "center" });
+    doc.fillColor("#888888").fontSize(10).font("Helvetica").text(`Generated on ${new Date().toLocaleString()} by Zbor AI`, { align: "center" });
     doc.moveDown(1);
     doc.fillColor("#222222").fontSize(11).font("Helvetica").text(content, { align: "left", lineGap: 5 });
     const footerY = doc.page.height - 45;
@@ -790,38 +715,18 @@ async function generatePDF(title, content) {
   });
 }
 
-// ── 📝 WORD DOC GENERATION ────────────────────────────────────
+// ── DOCX ──────────────────────────────────────────────────────
 async function generateDOCX(title, content) {
   const tmpPath = `/tmp/zbor_${Date.now()}.docx`;
   const lines = content.split("\n").filter(l => l.trim());
   const doc = new Document({
     sections: [{
       children: [
-        new Paragraph({
-          children: [new TextRun({ text: "⚡ ZBOR AI — Generated Document", bold: true, size: 28, color: "00d4ff" })],
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 100 },
-        }),
-        new Paragraph({
-          children: [new TextRun({ text: title, bold: true, size: 36, color: "1a1a2e" })],
-          heading: HeadingLevel.HEADING_1,
-          spacing: { before: 300, after: 200 },
-        }),
-        new Paragraph({
-          children: [new TextRun({ text: `Generated on ${new Date().toLocaleString()}`, color: "888888", size: 18, italics: true })],
-          spacing: { after: 400 },
-        }),
-        ...lines.map(line =>
-          new Paragraph({
-            children: [new TextRun({ text: line, size: 22 })],
-            spacing: { after: 150 },
-          })
-        ),
-        new Paragraph({
-          children: [new TextRun({ text: "— Generated by Zbor AI", italics: true, color: "888888", size: 18 })],
-          alignment: AlignmentType.RIGHT,
-          spacing: { before: 600 },
-        }),
+        new Paragraph({ children: [new TextRun({ text: "⚡ ZBOR AI — Generated Document", bold: true, size: 28, color: "00d4ff" })], alignment: AlignmentType.CENTER, spacing: { after: 100 } }),
+        new Paragraph({ children: [new TextRun({ text: title, bold: true, size: 36, color: "1a1a2e" })], heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 200 } }),
+        new Paragraph({ children: [new TextRun({ text: `Generated on ${new Date().toLocaleString()}`, color: "888888", size: 18, italics: true })], spacing: { after: 400 } }),
+        ...lines.map(line => new Paragraph({ children: [new TextRun({ text: line, size: 22 })], spacing: { after: 150 } })),
+        new Paragraph({ children: [new TextRun({ text: "— Generated by Zbor AI", italics: true, color: "888888", size: 18 })], alignment: AlignmentType.RIGHT, spacing: { before: 600 } }),
       ],
     }],
   });
@@ -830,7 +735,7 @@ async function generateDOCX(title, content) {
   return tmpPath;
 }
 
-// ── 🖼️ BANNER GENERATION ─────────────────────────────────────
+// ── BANNER ────────────────────────────────────────────────────
 function generateBanner(name, subtitle = "Zbor AI Member", style = "cyber") {
   const width = 900, height = 300;
   const canvas = createCanvas(width, height);
@@ -849,89 +754,52 @@ function generateBanner(name, subtitle = "Zbor AI Member", style = "cyber") {
   ctx.strokeStyle = s.accent + "18"; ctx.lineWidth = 1;
   for (let x = 0; x < width; x += 45) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
   for (let y = 0; y < height; y += 45) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
-  const addGlow = (x, y, r, color) => {
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, color + "44"); g.addColorStop(1, "transparent");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, width, height);
-  };
+  const addGlow = (x, y, r, color) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, color + "44"); g.addColorStop(1, "transparent"); ctx.fillStyle = g; ctx.fillRect(0, 0, width, height); };
   addGlow(140, 150, 160, s.accent); addGlow(760, 150, 130, s.accent2);
   const barGrad = ctx.createLinearGradient(0, 0, 0, height);
   barGrad.addColorStop(0, s.accent); barGrad.addColorStop(1, s.accent2);
   ctx.fillStyle = barGrad; ctx.fillRect(0, 0, 6, height);
   const ax = 105, ay = 150, ar = 72;
-  ctx.beginPath(); ctx.arc(ax, ay, ar, 0, Math.PI * 2);
-  ctx.fillStyle = s.bg2; ctx.fill();
-  ctx.strokeStyle = s.accent; ctx.lineWidth = 3; ctx.stroke();
+  ctx.beginPath(); ctx.arc(ax, ay, ar, 0, Math.PI * 2); ctx.fillStyle = s.bg2; ctx.fill(); ctx.strokeStyle = s.accent; ctx.lineWidth = 3; ctx.stroke();
   const initials = name.trim().split(/\s+/).map(w => w[0]?.toUpperCase() || "").slice(0, 2).join("");
-  ctx.fillStyle = s.accent; ctx.font = "bold 44px sans-serif";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(initials, ax, ay);
+  ctx.fillStyle = s.accent; ctx.font = "bold 44px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(initials, ax, ay);
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
   const fontSize = name.length > 16 ? 36 : name.length > 10 ? 46 : 54;
-  ctx.font = `bold ${fontSize}px sans-serif`;
-  ctx.fillStyle = s.text;
-  ctx.shadowColor = s.accent; ctx.shadowBlur = 14;
-  ctx.fillText(name, 205, 133);
-  ctx.shadowBlur = 0;
-  ctx.font = "22px sans-serif"; ctx.fillStyle = s.sub;
-  ctx.fillText(subtitle, 205, 170);
-  const divGrad = ctx.createLinearGradient(205, 0, width - 40, 0);
-  divGrad.addColorStop(0, s.accent); divGrad.addColorStop(1, s.accent2);
-  ctx.strokeStyle = divGrad; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(205, 197); ctx.lineTo(width - 40, 197); ctx.stroke();
-  ctx.font = "15px sans-serif"; ctx.fillStyle = s.accent + "bb";
-  ctx.fillText(`⚡ Zbor AI  •  Discord  •  ${new Date().getFullYear()}`, 205, 225);
-  ctx.textAlign = "right"; ctx.font = "13px sans-serif"; ctx.fillStyle = s.accent + "55";
-  ctx.fillText("Generated by Zbor AI", width - 18, height - 14);
+  ctx.font = `bold ${fontSize}px sans-serif`; ctx.fillStyle = s.text; ctx.shadowColor = s.accent; ctx.shadowBlur = 14; ctx.fillText(name, 205, 133); ctx.shadowBlur = 0;
+  ctx.font = "22px sans-serif"; ctx.fillStyle = s.sub; ctx.fillText(subtitle, 205, 170);
+  const divGrad = ctx.createLinearGradient(205, 0, width - 40, 0); divGrad.addColorStop(0, s.accent); divGrad.addColorStop(1, s.accent2);
+  ctx.strokeStyle = divGrad; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(205, 197); ctx.lineTo(width - 40, 197); ctx.stroke();
+  ctx.font = "15px sans-serif"; ctx.fillStyle = s.accent + "bb"; ctx.fillText(`⚡ Zbor AI  •  Discord  •  ${new Date().getFullYear()}`, 205, 225);
+  ctx.textAlign = "right"; ctx.font = "13px sans-serif"; ctx.fillStyle = s.accent + "55"; ctx.fillText("Generated by Zbor AI", width - 18, height - 14);
   const tmpPath = `/tmp/banner_${Date.now()}.png`;
   fs.writeFileSync(tmpPath, canvas.toBuffer("image/png"));
   return tmpPath;
 }
 
-// ── ✅ UPGRADED IMAGE GENERATION ──────────────────────────────
+// ── IMAGE GENERATION ──────────────────────────────────────────
 async function generateImageAdvanced(prompt, style = "flux") {
   const seed = Math.floor(Math.random() * 999999);
   const models = ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"];
   const selectedModel = models.includes(style) ? style : "flux";
-
   const providers = [
-    {
-      name: selectedModel,
-      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=${selectedModel}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true`,
-    },
-    {
-      name: "flux-fallback",
-      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux&width=1024&height=1024&seed=${seed + 1}&nologo=true&enhance=true`,
-    },
-    {
-      name: "turbo-fallback",
-      getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=turbo&width=1024&height=1024&seed=${seed + 2}&nologo=true`,
-    },
+    { name: selectedModel, getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=${selectedModel}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true` },
+    { name: "flux-fallback", getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux&width=1024&height=1024&seed=${seed + 1}&nologo=true&enhance=true` },
+    { name: "turbo-fallback", getUrl: () => `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=turbo&width=1024&height=1024&seed=${seed + 2}&nologo=true` },
   ];
-
   for (const provider of providers) {
     try {
       const url = provider.getUrl();
       const testRes = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(12000) });
-      if (testRes.ok) {
-        console.log(`✅ Image from: ${provider.name}`);
-        return { url, provider: provider.name };
-      }
-    } catch (e) {
-      console.log(`❌ Image provider ${provider.name}: ${e.message}`);
-    }
+      if (testRes.ok) { console.log(`✅ Image from: ${provider.name}`); return { url, provider: provider.name }; }
+    } catch (e) { console.log(`❌ Image provider ${provider.name}: ${e.message}`); }
   }
-
-  // Last resort — return first URL anyway and let Discord try to fetch it
   return { url: providers[0].getUrl(), provider: "flux-direct" };
 }
 
-// ── ✅ LOGO GENERATION ────────────────────────────────────────
 async function generateLogo(concept) {
-  const logoPrompt = `professional logo design for ${concept}, minimalist vector art, clean modern design, bold typography, geometric shapes, transparent background or white background, high contrast, scalable graphic, no gradients, flat design, iconic symbol`;
+  const logoPrompt = `professional logo design for ${concept}, minimalist vector art, clean modern design, bold typography, geometric shapes, white background, high contrast, scalable graphic, flat design, iconic symbol`;
   const seed = Math.floor(Math.random() * 999999);
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(logoPrompt)}?model=flux&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true`;
-  return url;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(logoPrompt)}?model=flux&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true&private=true`;
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
@@ -960,8 +828,7 @@ async function fetchBuffer(url) {
 }
 
 async function readFileContent(url) {
-  try { const res = await fetch(url); return (await res.text()).slice(0, 8000); }
-  catch { return null; }
+  try { const res = await fetch(url); return (await res.text()).slice(0, 8000); } catch { return null; }
 }
 
 async function readPdfContent(url) {
@@ -975,22 +842,44 @@ async function readPdfContent(url) {
   } catch { return null; }
 }
 
-const TEXT_EXTENSIONS = [
-  ".txt", ".md", ".js", ".ts", ".py", ".html", ".css", ".json", ".csv",
-  ".xml", ".yaml", ".yml", ".java", ".c", ".cpp", ".cs", ".php", ".rb",
-  ".go", ".rs", ".sql", ".sh", ".bat", ".env", ".log"
-];
+const TEXT_EXTENSIONS = [".txt", ".md", ".js", ".ts", ".py", ".html", ".css", ".json", ".csv",
+  ".xml", ".yaml", ".yml", ".java", ".c", ".cpp", ".cs", ".php", ".rb", ".go", ".rs", ".sql", ".sh", ".bat", ".env", ".log"];
 
 const processing = new Set();
 
+// ── BOT READY ─────────────────────────────────────────────────
 discord.on("ready", () => {
   console.log(`✅ Bot is online as Zbor AI`);
   setInterval(checkReminders, 30000);
   setInterval(checkScheduledMentions, 30000);
 });
 
+// ── ✅ ONE SINGLE messageCreate listener — NO DUPLICATE REPLIES ─
 discord.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  const rawContent = message.content;
+  const rawLower = rawContent.toLowerCase();
+
+  // ── Name memory — works in any channel, no mention needed ────
+  if (rawLower.includes("name this guy") || rawLower.includes("his name is")) {
+    const mentionedUser = message.mentions.users.first();
+    const nameMatch = rawContent.match(/"([^"]+)"|is\s+([a-zA-Z0-9]+)/i);
+    const chosenName = nameMatch ? (nameMatch[1] || nameMatch[2]) : null;
+    if (mentionedUser && chosenName) {
+      userNames[mentionedUser.id] = chosenName;
+      return message.reply(`Done! I'll remember ${mentionedUser.username} as **${chosenName}** from now on. 😉`);
+    }
+  }
+
+  if (rawLower.includes("what is the name of") || rawLower.includes("what's the name of")) {
+    const mentionedUser = message.mentions.users.first();
+    if (mentionedUser && userNames[mentionedUser.id]) {
+      return message.reply(`Pretty sure he said his name is **${userNames[mentionedUser.id]}** 😆`);
+    }
+  }
+
+  // ── All commands below require correct channel + bot mention ─
   if (message.channel.id !== ALLOWED_CHANNEL_ID) return;
   if (!message.mentions.has(discord.user)) return;
   if (processing.has(message.id)) return;
@@ -1016,7 +905,6 @@ discord.on("messageCreate", async (message) => {
     const typingInterval = setInterval(() => message.channel.sendTyping(), 8000);
     await message.channel.sendTyping();
 
-    // ── !analyze ──────────────────────────────────────────────
     if (lower.startsWith("!analyze")) {
       const analyzeInput = userMessage.replace(/^!analyze/i, "").trim();
       let analysisResults = [];
@@ -1026,14 +914,13 @@ discord.on("messageCreate", async (message) => {
           catch (e) { analysisResults.push(`❌ Could not analyze ${file.name}: ${e.message}`); }
         }
       }
-      if (analyzeInput.length > 0) { const buf = Buffer.from(analyzeInput, "utf8"); analysisResults.push(await runAnalysis(buf, "pasted_text.txt")); }
+      if (analyzeInput.length > 0) analysisResults.push(await runAnalysis(Buffer.from(analyzeInput, "utf8"), "pasted_text.txt"));
       if (analysisResults.length === 0) { await message.reply("Attach a file or paste text after `!analyze`!"); clearInterval(typingInterval); processing.delete(message.id); return; }
       clearInterval(typingInterval);
       for (const result of analysisResults) await sendChunks(message, result);
       processing.delete(message.id); return;
     }
 
-    // ── !hash ─────────────────────────────────────────────────
     if (lower.startsWith("!hash")) {
       const text = userMessage.replace(/^!hash/i, "").trim();
       if (!text) { await message.reply("Usage: `!hash your text here`"); clearInterval(typingInterval); processing.delete(message.id); return; }
@@ -1043,7 +930,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !roll ─────────────────────────────────────────────────
     if (lower.startsWith("!roll")) {
       const sides = parseInt(userMessage.replace(/^!roll/i, "").trim()) || 6;
       clearInterval(typingInterval);
@@ -1051,51 +937,43 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !flip ─────────────────────────────────────────────────
     if (lower.startsWith("!flip")) {
       clearInterval(typingInterval);
       await message.reply(`🪙 **${Math.random() < 0.5 ? "Heads" : "Tails"} 🪙**`);
       processing.delete(message.id); return;
     }
 
-    // ── !hangman ──────────────────────────────────────────────
     if (lower.startsWith("!hangman")) {
       clearInterval(typingInterval);
       await sendChunks(message, "🎮 **Hangman started!**\n" + startHangman(userId));
       processing.delete(message.id); return;
     }
 
-    // ── !numgame / !numguess ──────────────────────────────────
     if (lower.startsWith("!numgame") || lower.startsWith("!numguess")) {
-      const maxStr = userMessage.replace(/^!(numgame|numguess)/i, "").trim();
-      const max = parseInt(maxStr) || 100;
+      const max = parseInt(userMessage.replace(/^!(numgame|numguess)/i, "").trim()) || 100;
       clearInterval(typingInterval);
       await sendChunks(message, startNumberGame(userId, max));
       processing.delete(message.id); return;
     }
 
-    // ── !scramble ─────────────────────────────────────────────
     if (lower.startsWith("!scramble")) {
       clearInterval(typingInterval);
       await sendChunks(message, startScramble(userId));
       processing.delete(message.id); return;
     }
 
-    // ── !trivia ───────────────────────────────────────────────
     if (lower.startsWith("!trivia")) {
       clearInterval(typingInterval);
       await sendChunks(message, startTrivia(userId));
       processing.delete(message.id); return;
     }
 
-    // ── !hint ─────────────────────────────────────────────────
     if (lower.startsWith("!hint")) {
       clearInterval(typingInterval);
       await sendChunks(message, hintTrivia(userId));
       processing.delete(message.id); return;
     }
 
-    // ── !guess ────────────────────────────────────────────────
     if (lower.startsWith("!guess")) {
       const input = userMessage.replace(/^!guess/i, "").trim();
       clearInterval(typingInterval);
@@ -1103,7 +981,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !remind ───────────────────────────────────────────────
     if (lower.startsWith("!remind")) {
       const parts = userMessage.replace(/^!remind/i, "").trim();
       const timeMatch = parts.match(/^(\d+\s*(?:s|sec|m|min|h|hr|d|day))\s+(.*)/i);
@@ -1116,55 +993,36 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !schedule ─────────────────────────────────────────────
     if (lower.startsWith("!schedule")) {
       const input = userMessage.replace(/^!schedule/i, "").trim();
-
       if (input.toLowerCase() === "list") {
         const res = await pool.query(`SELECT * FROM scheduled_mentions WHERE user_id = $1 AND active = TRUE ORDER BY id`, [userId]);
         clearInterval(typingInterval);
         if (res.rows.length === 0) { await message.reply("You have no active scheduled mentions."); processing.delete(message.id); return; }
         let list = `📅 **Your scheduled mentions:**\n`;
         res.rows.forEach(r => list += `  • ID **${r.id}**: "${r.message}" — ${r.label || "custom interval"}\n`);
-        await sendChunks(message, list);
-        processing.delete(message.id); return;
+        await sendChunks(message, list); processing.delete(message.id); return;
       }
-
       const stopMatch = input.match(/^stop\s+(\d+)/i);
       if (stopMatch) {
         await pool.query(`UPDATE scheduled_mentions SET active = FALSE WHERE id = $1 AND user_id = $2`, [stopMatch[1], userId]);
-        clearInterval(typingInterval);
-        await message.reply(`🛑 Stopped scheduled mention #${stopMatch[1]}.`);
-        processing.delete(message.id); return;
+        clearInterval(typingInterval); await message.reply(`🛑 Stopped scheduled mention #${stopMatch[1]}.`); processing.delete(message.id); return;
       }
-
       const interval = parseScheduleInterval(input);
-      if (!interval) {
-        clearInterval(typingInterval);
-        await message.reply("Usage: `!schedule every day good morning everyone`\nOr: `!schedule every 2 hours reminder message`\nList yours: `!schedule list` | Stop one: `!schedule stop [id]`");
-        processing.delete(message.id); return;
-      }
-
+      if (!interval) { clearInterval(typingInterval); await message.reply("Usage: `!schedule every day message`\nList: `!schedule list` | Stop: `!schedule stop [id]`"); processing.delete(message.id); return; }
       const scheduleMsg = input.replace(/every\s+\w+(\s+\w+)?/i, "").trim() || "Hey! Just your scheduled ping from Zbor AI ⚡";
       const nextRun = new Date(Date.now() + interval.ms);
-      await pool.query(`INSERT INTO scheduled_mentions (user_id, channel_id, message, interval_ms, next_run, label) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [userId, message.channel.id, scheduleMsg, interval.ms, nextRun, interval.label]);
-      clearInterval(typingInterval);
-      await message.reply(`📅 Done! I'll mention you **${interval.label}** with: "${scheduleMsg}"\nManage it with \`!schedule list\` or \`!schedule stop [id]\``);
-      processing.delete(message.id); return;
+      await pool.query(`INSERT INTO scheduled_mentions (user_id, channel_id, message, interval_ms, next_run, label) VALUES ($1, $2, $3, $4, $5, $6)`, [userId, message.channel.id, scheduleMsg, interval.ms, nextRun, interval.label]);
+      clearInterval(typingInterval); await message.reply(`📅 Done! I'll mention you **${interval.label}** with: "${scheduleMsg}"`); processing.delete(message.id); return;
     }
 
-    // ── !quote save ───────────────────────────────────────────
     if (lower.startsWith("!quote save")) {
       const content = userMessage.replace(/^!quote save/i, "").trim();
       if (!content) { clearInterval(typingInterval); await message.reply("Usage: `!quote save your quote here`"); processing.delete(message.id); return; }
       await pool.query(`INSERT INTO quotes (guild_id, author, content) VALUES ($1, $2, $3)`, [message.guild.id, username, content]);
-      clearInterval(typingInterval);
-      await message.reply(`💬 Quote saved: *"${content}"* — ${username}`);
-      processing.delete(message.id); return;
+      clearInterval(typingInterval); await message.reply(`💬 Quote saved: *"${content}"* — ${username}`); processing.delete(message.id); return;
     }
 
-    // ── !quote ────────────────────────────────────────────────
     if (lower.startsWith("!quote")) {
       const res = await pool.query(`SELECT * FROM quotes WHERE guild_id = $1 ORDER BY RANDOM() LIMIT 1`, [message.guild.id]);
       clearInterval(typingInterval);
@@ -1173,7 +1031,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !poll ─────────────────────────────────────────────────
     if (lower.startsWith("!poll")) {
       const pollText = userMessage.replace(/^!poll/i, "").trim();
       const parts = pollText.match(/"([^"]+)"/g);
@@ -1190,26 +1047,23 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !roast ────────────────────────────────────────────────
     if (lower.startsWith("!roast")) {
       const target = userMessage.replace(/^!roast/i, "").trim() || username;
-      const roastReply = await callAI([{ role: "user", content: `You are Zbor AI, a funny Discord bot. Roast "${target}" in a hilarious but friendly way. Keep it under 3 sentences. Be creative and funny, not mean.` }], 200);
+      const roastReply = await callAI([{ role: "user", content: `Roast "${target}" in a hilarious but friendly way. Under 3 sentences. Be creative.` }], 200);
       clearInterval(typingInterval);
       await sendChunks(message, `🔥 ${roastReply || "I tried to roast them but they're already burnt 💀"}`);
       processing.delete(message.id); return;
     }
 
-    // ── !translate ────────────────────────────────────────────
     if (lower.startsWith("!translate")) {
       const translateText = userMessage.replace(/^!translate/i, "").trim();
-      if (!translateText) { clearInterval(typingInterval); await message.reply("Usage: `!translate [language] your text`\nExample: `!translate Arabic hello`"); processing.delete(message.id); return; }
-      const translateReply = await callAI([{ role: "user", content: `Translate the following text. If a target language is specified at the start, translate to that language. Otherwise translate to English. Just give the translation, nothing else: "${translateText}"` }], 300);
+      if (!translateText) { clearInterval(typingInterval); await message.reply("Usage: `!translate [language] your text`"); processing.delete(message.id); return; }
+      const translateReply = await callAI([{ role: "user", content: `Translate the following. If target language is specified at start, use that. Otherwise translate to English. Just give the translation: "${translateText}"` }], 300);
       clearInterval(typingInterval);
       await sendChunks(message, `🌍 **Translation:**\n${translateReply}`);
       processing.delete(message.id); return;
     }
 
-    // ── !summarize ────────────────────────────────────────────
     if (lower.startsWith("!summarize")) {
       const textToSum = userMessage.replace(/^!summarize/i, "").trim();
       if (!textToSum) { clearInterval(typingInterval); await message.reply("Paste the text after `!summarize`"); processing.delete(message.id); return; }
@@ -1219,7 +1073,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !announce ─────────────────────────────────────────────
     if (lower.startsWith("!announce")) {
       const announcement = userMessage.replace(/^!announce/i, "").trim();
       if (!announcement) { clearInterval(typingInterval); await message.reply("Usage: `!announce your message`"); processing.delete(message.id); return; }
@@ -1228,7 +1081,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── !stats ────────────────────────────────────────────────
     if (lower.startsWith("!stats")) {
       const profile = await getOrCreateProfile(userId, username);
       const countRes = await pool.query(`SELECT COUNT(*) as total FROM conversations WHERE user_id = $1 AND role = 'user'`, [userId]);
@@ -1237,28 +1089,25 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 🌐 !search ────────────────────────────────────────────
     if (lower.startsWith("!search")) {
       const query = userMessage.replace(/^!search/i, "").trim();
       if (!query) { clearInterval(typingInterval); await message.reply("Usage: `!search your query`"); processing.delete(message.id); return; }
       const searchResult = await webSearch(query);
       clearInterval(typingInterval);
-      if (searchResult) {
-        await sendChunks(message, `🔍 **Search: ${query}**\n\n${searchResult}`);
-      } else {
-        const aiAnswer = await callAI([{ role: "user", content: `Answer this search query concisely and factually: "${query}"` }], 400);
+      if (searchResult) await sendChunks(message, `🔍 **Search: ${query}**\n\n${searchResult}`);
+      else {
+        const aiAnswer = await callAI([{ role: "user", content: `Answer this search query concisely: "${query}"` }], 400);
         await sendChunks(message, `🔍 **${query}**\n\n${aiAnswer || "Couldn't find results for that."}`);
       }
       processing.delete(message.id); return;
     }
 
-    // ── 📺 !youtube / !yt ─────────────────────────────────────
     if (lower.startsWith("!youtube") || lower.startsWith("!yt")) {
       const query = userMessage.replace(/^!(youtube|yt)/i, "").trim();
       if (!query) { clearInterval(typingInterval); await message.reply("Usage: `!youtube your search`"); processing.delete(message.id); return; }
       const videos = await searchYouTube(query, 5);
       clearInterval(typingInterval);
-      if (!videos || videos.length === 0) { await message.reply(`❌ No YouTube results found for **"${query}"**`); }
+      if (!videos || videos.length === 0) await message.reply(`❌ No YouTube results for **"${query}"**`);
       else {
         let reply = `📺 **YouTube: "${query}"**\n\n`;
         videos.forEach((v, i) => { reply += `**${i + 1}.** [${v.title}](${v.url})\n   👤 ${v.channel}\n\n`; });
@@ -1267,13 +1116,12 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 🎵 !spotify ───────────────────────────────────────────
     if (lower.startsWith("!spotify")) {
       const query = userMessage.replace(/^!spotify/i, "").trim();
       if (!query) { clearInterval(typingInterval); await message.reply("Usage: `!spotify song or artist name`"); processing.delete(message.id); return; }
       const results = await searchSpotify(query, "track");
       clearInterval(typingInterval);
-      if (!results || results.length === 0) { await message.reply(`❌ Nothing found on Spotify for **"${query}"**`); }
+      if (!results || results.length === 0) await message.reply(`❌ Nothing found on Spotify for **"${query}"**`);
       else {
         let reply = `🎵 **Spotify: "${query}"**\n\n`;
         results.forEach((r, i) => { reply += `**${i + 1}.** ${r.name}${r.artist ? ` — ${r.artist}` : ""}\n   🔗 ${r.url}\n\n`; });
@@ -1282,7 +1130,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 📄 !pdf ───────────────────────────────────────────────
     if (lower.startsWith("!pdf")) {
       const input = userMessage.replace(/^!pdf/i, "").trim();
       if (!input) { clearInterval(typingInterval); await message.reply("Usage: `!pdf Title | Content`"); processing.delete(message.id); return; }
@@ -1298,7 +1145,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 📝 !doc ───────────────────────────────────────────────
     if (lower.startsWith("!doc")) {
       const input = userMessage.replace(/^!doc/i, "").trim();
       if (!input) { clearInterval(typingInterval); await message.reply("Usage: `!doc Title | Content`"); processing.delete(message.id); return; }
@@ -1314,7 +1160,6 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── 🖼️ !banner ────────────────────────────────────────────
     if (lower.startsWith("!banner")) {
       const input = userMessage.replace(/^!banner/i, "").trim();
       if (!input) { clearInterval(typingInterval); await message.reply("Usage: `!banner Name | Subtitle | style`\nStyles: `cyber` `fire` `nature` `ocean` `gold`"); processing.delete(message.id); return; }
@@ -1332,68 +1177,36 @@ discord.on("messageCreate", async (message) => {
       processing.delete(message.id); return;
     }
 
-    // ── ✅ UPGRADED !imagine ───────────────────────────────────
     if (lower.startsWith("!imagine") || lower.startsWith("!image")) {
       const rawPrompt = userMessage.replace(/^!(imagine|image)/i, "").trim();
-      if (!rawPrompt) {
-        clearInterval(typingInterval);
-        await message.reply("Usage: `!imagine a hacker cat with neon lights`\nStyles: `--flux` `--anime` `--realism` `--3d` `--turbo`");
-        processing.delete(message.id); return;
-      }
-
-      // Parse style flag
+      if (!rawPrompt) { clearInterval(typingInterval); await message.reply("Usage: `!imagine a hacker cat`\nOptional: `--anime` `--realism` `--3d` `--turbo`"); processing.delete(message.id); return; }
       const styleMatch = rawPrompt.match(/--(\w+)/);
       const style = styleMatch ? styleMatch[1].toLowerCase() : "flux";
       const cleanPrompt = rawPrompt.replace(/--\w+/g, "").trim();
-
       try {
-        // AI enhance the prompt first
-        const enhanced = await callAI([{
-          role: "user",
-          content: `Enhance this image generation prompt to be more vivid, detailed and descriptive. Add artistic style, lighting, quality keywords. Return ONLY the enhanced prompt, nothing else, max 100 words: "${cleanPrompt}"`
-        }], 150);
-
+        const enhanced = await callAI([{ role: "user", content: `Enhance this image prompt to be more vivid and detailed. Return ONLY the enhanced prompt, max 100 words: "${cleanPrompt}"` }], 150);
         const finalPrompt = enhanced?.trim() || cleanPrompt;
         const result = await generateImageAdvanced(finalPrompt, style);
-
         clearInterval(typingInterval);
-        await message.reply({
-          content: `🎨 **"${cleanPrompt}"**\n*✨ Rendered with ${result.provider} — AI enhanced*`,
-          files: [{ attachment: result.url, name: "generated.png" }]
-        });
-      } catch (e) {
-        clearInterval(typingInterval);
-        await message.reply(`❌ Image generation failed: ${e.message}`);
-      }
+        await message.reply({ content: `🎨 **"${cleanPrompt}"**\n*✨ Rendered with ${result.provider}*`, files: [{ attachment: result.url, name: "generated.png" }] });
+      } catch (e) { clearInterval(typingInterval); await message.reply(`❌ Image generation failed: ${e.message}`); }
       processing.delete(message.id); return;
     }
 
-    // ── ✅ NEW !logo command ───────────────────────────────────
     if (lower.startsWith("!logo")) {
       const concept = userMessage.replace(/^!logo/i, "").trim();
-      if (!concept) {
-        clearInterval(typingInterval);
-        await message.reply("Usage: `!logo your brand or concept`\nExample: `!logo cybersecurity startup blue neon theme`");
-        processing.delete(message.id); return;
-      }
+      if (!concept) { clearInterval(typingInterval); await message.reply("Usage: `!logo your brand or concept`"); processing.delete(message.id); return; }
       try {
         const logoUrl = await generateLogo(concept);
         clearInterval(typingInterval);
-        await message.reply({
-          content: `🏷️ **Logo: "${concept}"**\n*Professional logo generated with Flux AI*`,
-          files: [{ attachment: logoUrl, name: "logo.png" }]
-        });
-      } catch (e) {
-        clearInterval(typingInterval);
-        await message.reply(`❌ Logo generation failed: ${e.message}`);
-      }
+        await message.reply({ content: `🏷️ **Logo: "${concept}"**`, files: [{ attachment: logoUrl, name: "logo.png" }] });
+      } catch (e) { clearInterval(typingInterval); await message.reply(`❌ Logo generation failed: ${e.message}`); }
       processing.delete(message.id); return;
     }
 
-    // ── !help ─────────────────────────────────────────────────
     if (lower.startsWith("!help")) {
       clearInterval(typingInterval);
-      const helpMsg = `🤖 **Zbor AI — Command List**\`\`\`
+      await sendChunks(message, `🤖 **Zbor AI — Command List**\`\`\`
 🔐 CTF & Security
   !analyze [text/file]      — Full forensics analysis
   !hash [text]              — MD5/SHA1/SHA256/SHA512
@@ -1401,9 +1214,8 @@ discord.on("messageCreate", async (message) => {
 🎨 AI & Media
   !imagine [prompt]         — Generate AI image (Flux)
                               Add --anime --realism --3d --turbo
-  !logo [concept]           — Generate a professional logo ✨
-  !banner [name|sub|style]  — Make a profile banner
-                              Styles: cyber fire nature ocean gold
+  !logo [concept]           — Generate a professional logo
+  !banner [name|sub|style]  — Profile banner (cyber/fire/nature/ocean/gold)
 
 📄 Documents
   !pdf [title|content]      — Generate & send a PDF
@@ -1411,14 +1223,14 @@ discord.on("messageCreate", async (message) => {
 
 🌐 Internet
   !search [query]           — Search the web
-  !youtube / !yt [query]    — Search YouTube videos
-  !spotify [query]          — Search Spotify tracks
+  !youtube / !yt [query]    — Search YouTube
+  !spotify [query]          — Search Spotify
 
 🎮 Games
   !hangman                  — Classic hangman
-  !numgame [max]            — Guess the number (default 1-100)
+  !numgame [max]            — Guess the number
   !scramble                 — Unscramble a word
-  !trivia                   — Tech trivia question
+  !trivia                   — Tech trivia
   !guess [letter/answer]    — Guess for active game
   !hint                     — Hint for trivia
   !roll [sides]             — Roll a dice
@@ -1426,39 +1238,32 @@ discord.on("messageCreate", async (message) => {
 
 ⏰ Scheduling
   !remind [time] [msg]      — One-time reminder (30m, 2h...)
-  !schedule every day [msg] — Recurring mention (daily, hourly...)
-  !schedule list            — View your schedules
-  !schedule stop [id]       — Stop a schedule
+  !schedule every day [msg] — Recurring mention
+  !schedule list / stop [id]
 
 🛠️ Tools
   !translate [lang] [text]  — Translate text
-  !summarize [text]         — Summarize long text
+  !summarize [text]         — Summarize text
   !roast [@user]            — Roast someone 🔥
-  !poll "Q?" "A" "B"        — Create a reaction poll
+  !poll "Q?" "A" "B"        — Create a poll
   !quote / !quote save      — Random or save a quote
   !announce [msg]           — Ping @everyone
   !stats                    — Your chat stats
-  !help                     — This menu
-\`\`\`
-💬 Just chat normally — I'll suggest music/videos automatically when you ask!`;
-      await sendChunks(message, helpMsg);
+\`\`\``);
       processing.delete(message.id); return;
     }
 
-    // ── 🧠 NORMAL CHAT MODE ───────────────────────────────────
+    // ── NORMAL CHAT ───────────────────────────────────────────
     const profile = await getOrCreateProfile(userId, username);
     if (userMessage) await saveMessage(userId, username, "user", userMessage);
     const history = await getHistory(userId);
 
-    // ── 🎵 SMART MEDIA DETECTION ──────────────────────────────
     const mediaCheck = detectMediaRequest(userMessage);
     if (mediaCheck.detected && images.size === 0 && allFiles.size === 0) {
       const suggestions = await getMediaSuggestions(userMessage, mediaCheck.mediaType, mediaCheck.genre);
       if (suggestions && suggestions.length > 0) {
         let mediaReply = `🎵 Here are some suggestions for you, ${username}!\n\n`;
-        suggestions.forEach((s, i) => {
-          mediaReply += `**${i + 1}.** ${s.platform} — **${s.title}**${s.artist ? ` by ${s.artist}` : ""}\n   🔗 ${s.url}\n\n`;
-        });
+        suggestions.forEach((s, i) => { mediaReply += `**${i + 1}.** ${s.platform} — **${s.title}**${s.artist ? ` by ${s.artist}` : ""}\n   🔗 ${s.url}\n\n`; });
         mediaReply += `\n*Use \`!youtube\` or \`!spotify\` for more specific searches!*`;
         clearInterval(typingInterval);
         await sendChunks(message, mediaReply);
@@ -1466,16 +1271,12 @@ discord.on("messageCreate", async (message) => {
       }
     }
 
-    // ── 📅 SMART SCHEDULE DETECTION ───────────────────────────
     if (detectScheduleRequest(userMessage)) {
       const interval = parseScheduleInterval(userMessage);
       if (interval) {
-        const msgPart = userMessage.replace(/mention\s+me|remind\s+me|ping\s+me|tell\s+me/i, "")
-          .replace(/every\s+\w+(\s+\w+)?/i, "").trim()
-          || "Hey! Zbor AI scheduled mention ⚡";
+        const msgPart = userMessage.replace(/mention\s+me|remind\s+me|ping\s+me|tell\s+me/i, "").replace(/every\s+\w+(\s+\w+)?/i, "").trim() || "Hey! Zbor AI scheduled mention ⚡";
         const nextRun = new Date(Date.now() + interval.ms);
-        await pool.query(`INSERT INTO scheduled_mentions (user_id, channel_id, message, interval_ms, next_run, label) VALUES ($1, $2, $3, $4, $5, $6)`,
-          [userId, message.channel.id, msgPart, interval.ms, nextRun, interval.label]);
+        await pool.query(`INSERT INTO scheduled_mentions (user_id, channel_id, message, interval_ms, next_run, label) VALUES ($1, $2, $3, $4, $5, $6)`, [userId, message.channel.id, msgPart, interval.ms, nextRun, interval.label]);
         clearInterval(typingInterval);
         await message.reply(`📅 Got it! I'll mention you **${interval.label}**! Use \`!schedule list\` to manage it.`);
         processing.delete(message.id); return;
@@ -1504,32 +1305,6 @@ discord.on("messageCreate", async (message) => {
     }
 
     const reply = await callAI([
-      {
-        role: "user",
-        content: `You are Zbor AI — a chill, smart Discord bot and a genuine friend to ${username} (known them since ${profile.first_seen}).
-
-PERSONALITY:
-- Casual, funny, real — like texting a smart friend
-- Short replies unless they need detail — no essays for simple questions
-- Never use bullet points for normal chat — just talk
-- Have opinions, make jokes, be real
-- Never lecture, moralize, or refuse harmless jokes — just go along with it and have fun
-- If someone asks something silly or edgy between friends, play along and be funny about it
-- You can be sarcastic, goofy, and a little unhinged — that's what makes you fun
-- Switch to elite CTF/security mode when they need help with challenges
-
-IMPORTANT — REPLY LENGTH:
-- Casual chat → 1-3 sentences max
-- Questions → answer directly, no padding
-- Technical/CTF → as long as needed, step by step
-
-You know about these commands if they ever ask what you can do:
-!analyze, !hash, !imagine (with --anime --realism --3d --turbo flags), !logo, !banner, !pdf, !doc, !search, !youtube, !spotify, !roll, !flip, !hangman, !numgame, !scramble, !trivia, !guess, !hint, !remind, !schedule, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
-      },
-      {
-        role: "assistant",
-        content: `Yo! I'm Zbor AI. What's good?`,
-      },
       ...history,
       { role: "user", content: userContent },
     ], 500);
