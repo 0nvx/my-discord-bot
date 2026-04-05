@@ -28,54 +28,47 @@ const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
 // ── MODELS — Sequential fallback (not race) ──────────
 const MODELS = [
-  "google/gemini-flash-1.5",
-  "deepseek/deepseek-r1:free",
-  "google/gemini-pro",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen3-235b-a22b:free",
-  "mistralai/mistral-7b-instruct:free",
-  "gryphe/mythomax-l2-13b:free",
-  "undi95/toppy-m-7b:free",
+  "deepseek/deepseek-chat",
+  "meta-llama/llama-3.1-70b-instruct",
+  "mistralai/mistral-7b-instruct",
+  "google/gemini-flash-1.5"
 ];
 
 // ── Sequential fallback with proper headers ───────
 async function callAI(messages, maxTokens = 600) {
   for (const model of MODELS) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20000);
 
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        signal: controller.signal,
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://discord.com",
-          "X-Title": "Zbor AI Discord Bot",
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: maxTokens,
-        }),
+          model: model,
+          messages: messages,
+          max_tokens: maxTokens
+        })
       });
 
-      clearTimeout(timeout);
       const data = await res.json();
 
-      if (data.choices?.[0]?.message?.content) {
-        console.log(`✅ Response from: ${model}`);
+      if (data.error) {
+        console.log(`❌ ${model} error:`, data.error.message);
+        continue;
+      }
+
+      if (data.choices && data.choices.length > 0) {
+        console.log(`✅ Working model: ${model}`);
         return data.choices[0].message.content;
       }
 
-      console.log(`⚠️ No content from ${model}:`, JSON.stringify(data).slice(0, 200));
     } catch (err) {
-      console.log(`❌ ${model}: ${err.message}`);
+      console.log(`❌ ${model} failed:`, err.message);
     }
   }
 
-  console.log("❌ All models failed");
   return null;
 }
 
