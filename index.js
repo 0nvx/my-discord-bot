@@ -77,7 +77,7 @@ async function readFileContent(url) {
   }
 }
 
-// Fetch and read text from a PDF URL
+// Fetch and read text + metadata from a PDF URL
 async function readPdfContent(url) {
   try {
     console.log("Fetching PDF from:", url);
@@ -85,9 +85,20 @@ async function readPdfContent(url) {
     const buffer = await res.arrayBuffer();
     console.log("PDF buffer size:", buffer.byteLength);
     const data = await pdfParse(Buffer.from(buffer));
-    console.log("PDF text extracted:", data.text);
+
+    // Extract metadata
+    let metadata = "";
+    if (data.info) {
+      metadata += "[PDF METADATA]\n";
+      for (const [key, val] of Object.entries(data.info)) {
+        metadata += `${key}: ${val}\n`;
+      }
+    }
+
+    const fullContent = metadata + "\n[PDF TEXT]\n" + data.text;
+    console.log("Full PDF content:", fullContent);
     console.log("PDF pages:", data.numpages);
-    return data.text.slice(0, 8000);
+    return fullContent.slice(0, 8000);
   } catch (err) {
     console.error("PDF read error:", err);
     return null;
@@ -149,16 +160,16 @@ discord.on("messageCreate", async (message) => {
       }
     }
 
-    // Read PDF contents
+    // Read PDF contents including metadata
     for (const [, file] of pdfFiles) {
       console.log("Processing PDF:", file.name);
       const content = await readPdfContent(file.url);
       if (content && content.trim().length > 0) {
         console.log("PDF content found, length:", content.length);
-        fileContext += `\n\n📄 PDF File: ${file.name}\nFull extracted text (including any hidden text):\n\`\`\`\n${content}\n\`\`\``;
+        fileContext += `\n\n📄 PDF File: ${file.name}\nComplete PDF data including metadata and all text:\n\`\`\`\n${content}\n\`\`\``;
       } else {
         console.log("PDF appears empty or unreadable");
-        fileContext += `\n\n📄 PDF "${file.name}" appears to have no readable text. It may use images or special encoding.`;
+        fileContext += `\n\n📄 PDF "${file.name}" appears to have no readable text or metadata.`;
       }
     }
 
