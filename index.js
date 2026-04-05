@@ -36,7 +36,8 @@ const MODELS = [
 
 // ── Sequential fallback with proper headers ───────
 async function callAI(messages, maxTokens = 600) {
-  for (const model of MODELS) {
+ const finalMessages = [{ role: "system", content: SYSTEM_PROMPT }, ...messages];
+for (const model of MODELS) {
     try {
 
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -47,7 +48,7 @@ async function callAI(messages, maxTokens = 600) {
         },
         body: JSON.stringify({
           model: model,
-          messages: messages,
+          messages: finalMessages,
           max_tokens: maxTokens
         })
       });
@@ -328,7 +329,24 @@ async function checkScheduledMentions() {
     }
   } catch (e) { console.error("Schedule check error:", e.message); }
 }
+//-------------------------
+const userNames = {};
 
+// ── SYSTEM PROMPT  ──────────────────────────
+const SYSTEM_PROMPT = `
+You are Zbor AI, a Discord assistant.
+
+Rules:
+- If a user tells you their name (example: "my name is X"), remember it.
+- If someone later asks "what is the name of USER", you can repeat the name they told you.
+- This is NOT private information because the user said it publicly.
+- Do NOT refuse to answer if the user already shared the name in chat.
+- Be casual and funny like a Discord bot.
+- Switch to elite CTF/security mode when they need help with challenges.
+- Casual chat -> 1-3 sentences max.
+- Questions -> answer directly, no padding.
+`;
+// -------------------------------------------------------------
 // ── REMINDER SYSTEM ───────────────────────────────────────────
 function parseRemindTime(str) {
   const match = str.match(/(\d+)\s*(s|sec|m|min|h|hr|d|day)/i);
