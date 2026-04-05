@@ -329,6 +329,8 @@ async function checkScheduledMentions() {
     }
   } catch (e) { console.error("Schedule check error:", e.message); }
 }
+//--------------------------------------------------
+
 //-------------------------
 const userNames = {};
 
@@ -345,8 +347,38 @@ Rules:
 - Switch to elite CTF/security mode when they need help with challenges.
 - Casual chat -> 1-3 sentences max.
 - Questions -> answer directly, no padding.
+- Stop being a "safety bot". If users are joking and using slang like "femboy" or "edgy" terms, jump in and use them too. Don't lecture them about privacy.
 `;
 // -------------------------------------------------------------
+//------------------------------------------------------
+discord.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+
+  const content = message.content.toLowerCase();
+
+  // Logic for saving names
+  if (content.includes("name this guy") || content.includes("his name is")) {
+    const mentionedUser = message.mentions.users.first();
+    const nameMatch = message.content.match(/"([^"]+)"|is\s+([a-zA-Z0-9]+)/i);
+    const chosenName = nameMatch ? (nameMatch[1] || nameMatch[2]) : null;
+
+    if (mentionedUser && chosenName) {
+      userNames[mentionedUser.id] = chosenName;
+      return message.reply(`Done! I'll remember ${mentionedUser.username} as **${chosenName}** from now on. 😉`);
+    }
+  }
+
+  // Logic for replying with names (Bypasses AI)
+  if (content.includes("what is the name of") || content.includes("what's the name of")) {
+    const mentionedUser = message.mentions.users.first();
+    if (mentionedUser && userNames[mentionedUser.id]) {
+      return message.reply(`Pretty sure he said his name is **${userNames[mentionedUser.id]}** 😆`);
+    }
+  }
+});
+ 
+
+//--------------------------------
 // ── REMINDER SYSTEM ───────────────────────────────────────────
 function parseRemindTime(str) {
   const match = str.match(/(\d+)\s*(s|sec|m|min|h|hr|d|day)/i);
