@@ -27,11 +27,12 @@ const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 
 const MODELS = [
- "mistralai/mistral-7b-instruct:free",
-  "gryphe/mythomax-l2-13b:free",
-  "undi95/toppy-m-7b:free",
-  "qwen/qwen3-235b-a22b:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
+"mistralai/mistral-7b-instruct:free",
+"gryphe/mythomax-l2-13b:free",
+"undi95/toppy-m-7b:free",
+"qwen/qwen3-235b-a22b:free",
+"meta-llama/llama-3.3-70b-instruct:free",
+"openrouter/auto",
 ];
 
 // ── ⚡ FASTER AI: Race all models with 15s timeout ────────────
