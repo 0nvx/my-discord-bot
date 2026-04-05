@@ -12,7 +12,7 @@ const discord = new Client({
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ✅ PUT YOUR CHANNEL ID HERE
+// CHANNEL ID
 const ALLOWED_CHANNEL_ID = "1479070011778797731";
 
 discord.on("ready", () => {
@@ -36,7 +36,7 @@ discord.on("messageCreate", async (message) => {
     const response = await claude.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1024,
-      system: `You are a helpful Discord bot assistant. Reply in a friendly, clear, and conversational way — similar to how Claude (the AI by Anthropic) replies. Use simple language, be concise, and format your replies nicely for Discord. Use bullet points or numbered lists when helpful.`,
+      system: `You are Zbor AI, a helpful and friendly Discord bot assistant. Your name is Zbor AI. If anyone asks what your name is or who you are, tell them you are Zbor AI. Reply in a friendly, clear, and conversational way. Use simple language, be concise, and format your replies nicely for Discord. Use bullet points or numbered lists when helpful.`,
       messages: [{ role: "user", content: userMessage }],
     });
 
