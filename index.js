@@ -25,28 +25,37 @@ const MODELS = [
   "openrouter/auto",
 ];
 
+// ── ⚡ FASTER AI: Race all models in parallel, use whichever replies first ──
 async function callAI(messages) {
-  for (const model of MODELS) {
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model, messages }),
-      });
-      const data = await res.json();
-      if (data.choices && data.choices[0]) {
-        console.log(`✅ Success with model: ${model}`);
+  const promises = MODELS.map(model =>
+    fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model, messages }),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.choices?.[0]?.message?.content) {
+        console.log(`✅ First response from: ${model}`);
         return data.choices[0].message.content;
       }
-      console.log(`❌ Failed: ${model}`);
-    } catch (err) {
-      console.log(`❌ Error with ${model}:`, err.message);
-    }
+      throw new Error(`No valid response from ${model}`);
+    })
+    .catch(err => {
+      console.log(`❌ ${model}: ${err.message}`);
+      throw err;
+    })
+  );
+
+  try {
+    return await Promise.any(promises);
+  } catch {
+    console.log("❌ All models failed");
+    return null;
   }
-  return null;
 }
 
 async function initDB() {
@@ -434,6 +443,39 @@ async function readPdfContent(url) {
   } catch (err) { return null; }
 }
 
+// ── 🌐 WEB SEARCH (DuckDuckGo — no API key needed) ───────────
+async function webSearch(query) {
+  try {
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const res = await fetch(url, { headers: { "User-Agent": "ZborAI-Discord-Bot/1.0" } });
+    const data = await res.json();
+
+    let result = "";
+
+    // Instant answer (e.g. math, facts)
+    if (data.Answer) result += `💡 **Answer:** ${data.Answer}\n\n`;
+
+    // Main abstract (Wikipedia-style summary)
+    if (data.AbstractText) result += `📖 ${data.AbstractText}\n`;
+
+    // Related topics as bullet points
+    if (!result && data.RelatedTopics?.length > 0) {
+      result += `🔍 **Top results for "${query}":**\n`;
+      data.RelatedTopics.slice(0, 5).forEach(t => {
+        if (t.Text) result += `• ${t.Text}\n`;
+      });
+    }
+
+    const sourceUrl = data.AbstractURL || (data.RelatedTopics?.[0]?.FirstURL) || null;
+    if (sourceUrl) result += `\n🔗 ${sourceUrl}`;
+
+    return result.trim() || null;
+  } catch (err) {
+    console.error("Search error:", err.message);
+    return null;
+  }
+}
+
 const TEXT_EXTENSIONS = [
   ".txt", ".md", ".js", ".ts", ".py", ".html", ".css",
   ".json", ".csv", ".xml", ".yaml", ".yml", ".java",
@@ -445,7 +487,6 @@ const processing = new Set();
 
 discord.on("ready", () => {
   console.log(`✅ Bot is online as Zbor AI`);
-  // Check reminders every 30 seconds
   setInterval(checkReminders, 30000);
 });
 
@@ -724,6 +765,57 @@ discord.on("messageCreate", async (message) => {
       return;
     }
 
+    // ── 🌐 !search ────────────────────────────────────────────
+    if (lower.startsWith("!search")) {
+      const query = userMessage.replace(/^!search/i, "").trim();
+      if (!query) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!search your query here`\nExample: `!search latest CTF writeups`");
+        processing.delete(message.id);
+        return;
+      }
+      const searchResult = await webSearch(query);
+      clearInterval(typingInterval);
+      if (searchResult) {
+        await sendChunks(message, `🔍 **Search: ${query}**\n\n${searchResult}`);
+      } else {
+        // Fallback: ask AI about it
+        const aiAnswer = await callAI([{
+          role: "user",
+          content: `Answer this search query as best you can: "${query}". Be concise and factual.`
+        }]);
+        await sendChunks(message, `🔍 **${query}**\n\n${aiAnswer || "Couldn't find results for that."}`);
+      }
+      processing.delete(message.id);
+      return;
+    }
+
+    // ── 🎨 !imagine ───────────────────────────────────────────
+    if (lower.startsWith("!imagine") || lower.startsWith("!image")) {
+      const prompt = userMessage.replace(/^!(imagine|image)/i, "").trim();
+      if (!prompt) {
+        clearInterval(typingInterval);
+        await message.reply("Usage: `!imagine your prompt here`\nExample: `!imagine a hacker cat with neon lights`");
+        processing.delete(message.id);
+        return;
+      }
+      try {
+        // Pollinations.AI — free, no API key needed
+        const seed = Math.floor(Math.random() * 99999);
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=768&seed=${seed}&nologo=true&enhance=true`;
+        clearInterval(typingInterval);
+        await message.reply({
+          content: `🎨 **"${prompt}"**`,
+          files: [{ attachment: imageUrl, name: "generated.png" }],
+        });
+      } catch (e) {
+        clearInterval(typingInterval);
+        await message.reply(`❌ Image generation failed: ${e.message}`);
+      }
+      processing.delete(message.id);
+      return;
+    }
+
     // ── !help ─────────────────────────────────────────────────
     if (lower.startsWith("!help")) {
       clearInterval(typingInterval);
@@ -731,6 +823,10 @@ discord.on("messageCreate", async (message) => {
 🔐 CTF & Security
   !analyze [text/file] — Full forensics analysis
   !hash [text]         — MD5/SHA1/SHA256/SHA512
+
+🎨 AI Tools
+  !imagine [prompt]    — Generate an AI image
+  !search [query]      — Search the web
 
 🎮 Games
   !hangman             — Start a hangman game
@@ -805,7 +901,7 @@ When ${username} needs CTF or cybersecurity help:
 - Never guess — reason carefully and show your work
 - Only give a flag when 100% certain
 
-Available commands they can use: !analyze, !hash, !roll, !flip, !hangman, !guess, !remind, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
+Available commands they can use: !analyze, !hash, !imagine, !search, !roll, !flip, !hangman, !guess, !remind, !translate, !summarize, !roast, !poll, !quote, !announce, !stats, !help`,
       },
       {
         role: "assistant",
