@@ -361,7 +361,43 @@ async function checkScheduledMentions() {
 }
 
 // ── 🎮 GAMES ──────────────────────────────────────────────────
-const hangmanWords = ["cybersecurity","discord","javascript","python","hacking","encryption","firewall","noshelter","algorithm","database","blockchain","cryptocurrency","artificial","intelligence","penetration","vulnerability"];
+const hangmanWords = [
+  // Tech
+  "cybersecurity","javascript","python","encryption","firewall","algorithm","database","blockchain","vulnerability","penetration",
+  "malware","phishing","ransomware","authentication","authorization","cryptography","hashing","virtualization","containerization",
+  "microprocessor","motherboard","operating","multithreading","parallelism","datacenter","infrastructure","virtualmachine",
+
+  // Animals
+  "elephant","penguin","crocodile","butterfly","cheetah","dolphin","gorilla","flamingo","kangaroo","octopus","chameleon","wolverine",
+  "alligator","hippopotamus","chimpanzee","rattlesnake","orangutan","meerkat","salamander","porcupine","armadillo","hedgehog",
+  "antelope","woodpecker","jellyfish","starfish","seahorse","narwhal","platypus","reindeer","mongoose",
+
+  // Food
+  "spaghetti","watermelon","chocolate","strawberry","avocado","pineapple","blueberry","hamburger","lasagna","croissant","marshmallow",
+  "pancakes","cheesecake","tiramisu","sandwich","dumplings","sushiroll","milkshake","lemonade","cappuccino","espresso",
+  "macaroni","omelette","brownies","cupcakes","mozzarella","pepperoni","nachos","quesadilla","guacamole",
+
+  // Countries & Cities
+  "australia","switzerland","philippines","madagascar","amsterdam","barcelona","singapore","casablanca","jerusalem","stockholm",
+  "argentina","colombia","venezuela","indonesia","thailand","vietnam","norway","finland","denmark","portugal",
+  "budapest","vienna","prague","istanbul","dubai","tokyo","seoul","beijing","shanghai","mumbai",
+
+  // Movies & Games
+  "minecraft","fortnite","playstation","adventure","superhero","telescope","labyrinth","gladiator","inception","interstellar",
+  "terminator","transformers","batman","spiderman","avengers","matrix","jurassic","godfather","rockstar","nintendo",
+  "cyberpunk","assassins","witcher","overwatch","battlefield","callofduty","halo","bioshock",
+
+  // Science
+  "astronomy","microscope","telescope","photosynthesis","evolution","chemistry","molecule","neutron","electron","gravity",
+  "radiation","laboratory","experiment","hypothesis","ecosystem","atmosphere","volcano","earthquake","tsunami","galaxy",
+
+  // Random fun words
+  "trampolining","saxophone","earthquake","rhinoceros","skyscraper","thunderstorm","observatory","expedition","ambassador","championship",
+  "vocabulary","infrastructure","photography","philosophy","bibliography","assassination","revolutionary","transportation","Mediterranean",
+  "imagination","destination","extraordinary","magnificent","adrenaline","celebration","invisible","mysterious","adventure","legendary",
+  "consequence","architecture","responsibility","communication","civilization","intelligence","determination","perseverance","curiosity",
+  "opportunity","satisfaction","organization","motivation","inspiration","innovation","creativity","knowledge","education"
+];
 const activeGames = {};
 
 function startHangman(userId) {
