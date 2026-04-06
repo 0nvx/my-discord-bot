@@ -108,8 +108,7 @@ async function initDB() {
       role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS user_profiles (
-      user_id TEXT PRIMARY KEY, username TEXT NOT NULL, first_seen TEXT NOT NULL,
-      message_count INT DEFAULT 0, last_seen TIMESTAMP DEFAULT NOW()
+      user_id TEXT PRIMARY KEY, username TEXT NOT NULL, first_seen TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS reminders (
       id SERIAL PRIMARY KEY, user_id TEXT NOT NULL, channel_id TEXT NOT NULL,
@@ -137,6 +136,11 @@ async function initDB() {
       definition TEXT NOT NULL, posted_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  // ✅ Safely add columns that may not exist in old tables
+  await pool.query(`ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS message_count INT DEFAULT 0`);
+  await pool.query(`ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP DEFAULT NOW()`);
+
   console.log("✅ Database ready!");
 }
 
@@ -814,12 +818,11 @@ const TEXT_EXTENSIONS = [".txt",".md",".js",".ts",".py",".html",".css",".json","
 const processing = new Set();
 
 // ── BOT READY ─────────────────────────────────────────────────
-discord.on("ready", () => {
+discord.on("clientReady", () => {
   console.log(`✅ Zbor AI is online as ${discord.user.tag}`);
   setInterval(checkReminders, 30000);
   setInterval(checkScheduledMentions, 30000);
 });
-
 // ── MESSAGE HANDLER ───────────────────────────────────────────
 discord.on("messageCreate", async (message) => {
   if (message.author.bot) return;
